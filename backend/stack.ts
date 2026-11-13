@@ -21,6 +21,7 @@ import { InteractiveTerminal, Terminal } from "./terminal";
 import childProcessAsync from "promisify-child-process";
 import { Settings } from "./settings";
 import { deleteIn, setStringIn } from "./yaml-text-edit";
+import { imageUpdateChecker } from "./image-update-checker";
 
 export class Stack {
 
@@ -90,6 +91,7 @@ export class Stack {
             composeFileName: this._composeFileName,
             endpoint,
             folder: isManagedByDockge ? this.folder : "",
+            imageUpdates: isManagedByDockge ? (imageUpdateChecker.get(this.name) ?? null) : null,
         };
     }
 

@@ -4,6 +4,8 @@ import { callbackError, callbackResult, checkLogin, DockgeSocket, ValidationErro
 import { Stack } from "../stack";
 import { AgentSocket } from "../../common/agent-socket";
 import { listDirectory } from "../file-browser";
+import { imageUpdateChecker } from "../image-update-checker";
+import { log } from "../log";
 
 export class DockerSocketHandler extends AgentSocketHandler {
     create(socket : DockgeSocket, server : DockgeServer, agentSocket : AgentSocket) {
@@ -188,12 +190,40 @@ export class DockerSocketHandler extends AgentSocketHandler {
 
                 const stack = await Stack.getStack(server, stackName);
                 await stack.update(socket);
+
+                // Refresh the update badge of this stack
+                imageUpdateChecker.checkStack(stackName).catch((e) => log.debug("image-update", String(e)));
                 callbackResult({
                     ok: true,
                     msg: "Updated",
                     msgi18n: true,
                 }, callback);
                 server.sendStackList();
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Check if newer images are available, for one stack or for all stacks ("")
+        agentSocket.on("checkImageUpdates", async (stackName : unknown, callback) => {
+            try {
+                checkLogin(socket);
+
+                if (typeof(stackName) !== "string") {
+                    throw new ValidationError("Stack name must be a string");
+                }
+
+                if (stackName) {
+                    await imageUpdateChecker.checkStack(stackName);
+                } else {
+                    await imageUpdateChecker.checkAll();
+                }
+
+                callbackResult({
+                    ok: true,
+                    msg: "imageUpdateCheckDone",
+                    msgi18n: true,
+                }, callback);
             } catch (e) {
                 callbackError(e, callback);
             }

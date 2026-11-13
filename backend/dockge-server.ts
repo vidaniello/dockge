@@ -28,6 +28,7 @@ import path from "path";
 import { TerminalSocketHandler } from "./agent-socket-handlers/terminal-socket-handler";
 import { Stack } from "./stack";
 import { Cron } from "croner";
+import { imageUpdateChecker } from "./image-update-checker";
 import gracefulShutdown from "http-graceful-shutdown";
 import User from "./models/user";
 import childProcessAsync from "promisify-child-process";
@@ -394,6 +395,9 @@ export class DockgeServer {
             } else {
                 log.info("server", `Listening on ${this.config.port}`);
             }
+
+            // Periodic check of image updates (interval in the settings)
+            imageUpdateChecker.init(this);
 
             // Run every 10 seconds
             Cron("*/10 * * * * *", {

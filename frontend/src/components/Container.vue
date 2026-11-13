@@ -5,6 +5,10 @@
                 <h4>{{ name }}</h4>
                 <div class="image mb-2">
                     <span class="me-1">{{ imageName }}:</span><span class="tag">{{ imageTag }}</span>
+                    <span v-if="updateInfo && !isEditMode" class="badge ms-2 update-badge" :class="updateBadgeClass" :title="updateInfo.error || ''">
+                        <font-awesome-icon v-if="updateInfo.status === 'update' || updateInfo.status === 'recreate'" icon="arrow-alt-circle-up" class="me-1" />
+                        {{ $t("imageStatus_" + updateInfo.status) }}
+                    </span>
                 </div>
                 <div v-if="!isEditMode">
                     <span class="badge me-1" :class="bgStyle">{{ status }}</span>
@@ -220,7 +224,12 @@ export default defineComponent({
         dockerStats: {
             type: Object,
             default: null
-        }
+        },
+        /** Result of the image update check for this service: { image, status, error } */
+        updateInfo: {
+            type: Object,
+            default: null,
+        },
     },
     emits: [
         "start-service",
@@ -312,6 +321,20 @@ export default defineComponent({
                 return {};
             }
             return this.envsubstJSONConfig.services[this.name];
+        },
+
+        updateBadgeClass() {
+            switch (this.updateInfo?.status) {
+                case "update":
+                case "recreate":
+                    return "bg-warning text-dark";
+                case "ok":
+                    return "bg-success";
+                case "error":
+                    return "bg-danger";
+                default:
+                    return "bg-secondary";
+            }
         },
 
         imageName() {

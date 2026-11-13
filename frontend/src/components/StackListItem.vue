@@ -11,6 +11,13 @@
         <div class="title">
             <span>{{ stackName }}</span>
         </div>
+        <span
+            v-if="stack.imageUpdates && stack.imageUpdates.updates > 0"
+            class="ms-auto update-icon"
+            :title="$t('imageUpdatesAvailable', [ stack.imageUpdates.updates ])"
+        >
+            <font-awesome-icon icon="arrow-alt-circle-up" />
+        </span>
     </router-link>
 </template>
 
@@ -202,6 +209,11 @@ export default {
 
 .dim {
     opacity: 0.5;
+}
+
+.update-icon {
+    color: $warning;
+    padding-left: 8px;
 }
 
 </style>

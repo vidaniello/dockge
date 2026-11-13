@@ -57,6 +57,20 @@
                 <div class="form-text"></div>
             </div>
 
+            <!-- Image update check -->
+            <div class="mb-4">
+                <label class="form-label" for="imageUpdateInterval">
+                    {{ $t("imageUpdateInterval") }}
+                </label>
+                <select id="imageUpdateInterval" v-model="imageUpdateInterval" class="form-select">
+                    <option :value="0">{{ $t("disabled") }}</option>
+                    <option v-for="hours in [ 1, 3, 6, 12, 24, 48, 168 ]" :key="hours" :value="hours">
+                        {{ $t("everyHours", [ hours ]) }}
+                    </option>
+                </select>
+                <div class="form-text">{{ $t("imageUpdateIntervalHelp") }}</div>
+            </div>
+
             <!-- Save Button -->
             <div>
                 <button class="btn btn-primary" type="submit">
@@ -95,7 +109,16 @@ export default {
         },
         guessTimezone() {
             return dayjs.tz.guess();
-        }
+        },
+        imageUpdateInterval: {
+            get() {
+                const value = this.settings.imageUpdateInterval;
+                return (value === undefined || value === null || value === "") ? 12 : Number(value);
+            },
+            set(value) {
+                this.settings.imageUpdateInterval = value;
+            },
+        },
     },
 
     methods: {

@@ -39,6 +39,7 @@
                     <button v-if="!isEditMode" class="btn btn-normal" :disabled="processing" @click="updateStack">
                         <font-awesome-icon icon="cloud-arrow-down" class="me-1" />
                         {{ $t("updateStack") }}
+                        <span v-if="imageUpdates && imageUpdates.updates > 0" class="badge bg-warning text-dark ms-1">{{ imageUpdates.updates }}</span>
                     </button>
 
                     <button v-if="!isEditMode && active" class="btn btn-normal" :disabled="processing" @click="stopStack">
@@ -50,6 +51,10 @@
                         <BDropdownItem @click="downStack">
                             <font-awesome-icon icon="stop" class="me-1" />
                             {{ $t("downStack") }}
+                        </BDropdownItem>
+                        <BDropdownItem v-if="!isEditMode" @click="checkImageUpdates">
+                            <font-awesome-icon icon="arrows-rotate" class="me-1" />
+                            {{ $t("checkImageUpdates") }}
                         </BDropdownItem>
                         <BDropdownItem v-if="!isEditMode" @click="openFolderDialog">
                             <font-awesome-icon icon="folder" class="me-1" />
@@ -138,6 +143,7 @@
                             :first="name === Object.keys(jsonConfig.services)[0]"
                             :serviceStatus="serviceStatusList[name]"
                             :dockerStats="dockerStats"
+                            :updateInfo="imageUpdates?.services?.[name] ?? null"
                             @start-service="startService"
                             @stop-service="stopService"
                             @restart-service="restartService"
@@ -516,6 +522,11 @@ export default {
 
         status() {
             return this.globalStack?.status;
+        },
+
+        /** Result of the last image update check of this stack */
+        imageUpdates() {
+            return this.globalStack?.imageUpdates ?? null;
         },
 
         active() {
@@ -910,6 +921,14 @@ export default {
             view.dispatch(view.state.replaceSelection(picked));
             view.focus();
             this.$nextTick(() => this.yamlCodeChange());
+        },
+
+        checkImageUpdates() {
+            this.processing = true;
+            this.$root.emitAgent(this.endpoint, "checkImageUpdates", this.stack.name, (res) => {
+                this.processing = false;
+                this.$root.toastRes(res);
+            });
         },
 
         openFolderDialog() {
