@@ -9,6 +9,7 @@ import { generatePasswordHash, needRehashPassword, shake256, SHAKE256_LENGTH, ve
 import { User } from "../models/user";
 import {
     callbackError,
+    callbackResult,
     checkLogin,
     DockgeSocket,
     doubleCheckPassword,
@@ -20,6 +21,7 @@ import jwt from "jsonwebtoken";
 import { Settings } from "../settings";
 import fs, { promises as fsAsync } from "fs";
 import path from "path";
+import { createApiKey, deleteApiKey, listApiKeys, setApiKeyActive } from "../api/api-keys";
 
 export class MainSocketHandler extends SocketHandler {
     create(socket : DockgeSocket, server : DockgeServer) {
@@ -305,6 +307,72 @@ export class MainSocketHandler extends SocketHandler {
                         msg: e.message,
                     });
                 }
+            }
+        });
+
+        // ---- API keys (REST API / MCP) ----
+        socket.on("getApiKeyList", async (callback) => {
+            try {
+                checkLogin(socket);
+                callbackResult({
+                    ok: true,
+                    keys: await listApiKeys(),
+                    config: {
+                        port: server.apiPort ?? null,
+                        hostname: server.apiHostname ?? null,
+                        tls: !!((process.env.DOCKGE_API_SSL_KEY || server.config.sslKey) && (process.env.DOCKGE_API_SSL_CERT || server.config.sslCert)),
+                        trustProxy: process.env.DOCKGE_TRUST_PROXY || null,
+                        allowHttp: process.env.DOCKGE_API_ALLOW_HTTP === "true",
+                    },
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Creating a key needs the password: a "write" key gives full control of Docker on this host
+        socket.on("addApiKey", async (data : unknown, currentPassword : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (!data || typeof(data) !== "object") {
+                    throw new ValidationError("Invalid data");
+                }
+                if (typeof(currentPassword) !== "string") {
+                    throw new ValidationError("Password is required");
+                }
+                await doubleCheckPassword(socket, currentPassword);
+                const { name, permission, expiresInDays } = data as { name? : unknown, permission? : unknown, expiresInDays? : unknown };
+                const result = await createApiKey(String(name ?? ""), String(permission ?? ""), Number(expiresInDays) || null);
+                callbackResult({
+                    ok: true,
+                    ...result,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        socket.on("deleteApiKey", async (id : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                await deleteApiKey(Number(id));
+                callbackResult({
+                    ok: true,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        socket.on("setApiKeyActive", async (id : unknown, active : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                await setApiKeyActive(Number(id), active === true);
+                callbackResult({
+                    ok: true,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
             }
         });
 

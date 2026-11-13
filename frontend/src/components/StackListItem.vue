@@ -1,9 +1,23 @@
 <template>
-    <router-link :to="url" :class="{ 'dim' : !stack.isManagedByDockge }" class="item">
+    <router-link
+        :to="url"
+        :class="{ 'dim' : !stack.isManagedByDockge }"
+        class="item"
+        :style="depthMargin"
+        :draggable="stack.isManagedByDockge ? 'true' : 'false'"
+        @dragstart="onDragStart"
+    >
         <Uptime :stack="stack" :fixed-width="true" class="me-2" />
         <div class="title">
             <span>{{ stackName }}</span>
         </div>
+        <span
+            v-if="stack.imageUpdates && stack.imageUpdates.updates > 0"
+            class="ms-auto update-icon"
+            :title="$t('imageUpdatesAvailable', [ stack.imageUpdates.updates ])"
+        >
+            <font-awesome-icon icon="arrow-alt-circle-up" />
+        </span>
     </router-link>
 </template>
 
@@ -63,8 +77,11 @@ export default {
             }
         },
         depthMargin() {
+            if (!this.depth) {
+                return {};
+            }
             return {
-                marginLeft: `${31 * this.depth}px`,
+                paddingLeft: `${8 + 16 * this.depth}px`,
             };
         },
         stackName() {
@@ -81,6 +98,23 @@ export default {
 
     },
     methods: {
+        /**
+         * Drag a managed stack onto a folder of the sidebar to move it there
+         * @param {DragEvent} e Drag event
+         * @returns {void}
+         */
+        onDragStart(e) {
+            if (!this.stack.isManagedByDockge) {
+                e.preventDefault();
+                return;
+            }
+            e.dataTransfer.setData("application/x-dockge-stack", JSON.stringify({
+                name: this.stack.name,
+                endpoint: this.stack.endpoint || "",
+            }));
+            e.dataTransfer.effectAllowed = "move";
+        },
+
         /**
          * Changes the collapsed value of the current stack and saves
          * it to local storage
@@ -175,6 +209,11 @@ export default {
 
 .dim {
     opacity: 0.5;
+}
+
+.update-icon {
+    color: $warning;
+    padding-left: 8px;
 }
 
 </style>

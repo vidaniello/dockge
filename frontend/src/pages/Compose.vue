@@ -39,6 +39,7 @@
                     <button v-if="!isEditMode" class="btn btn-normal" :disabled="processing" @click="updateStack">
                         <font-awesome-icon icon="cloud-arrow-down" class="me-1" />
                         {{ $t("updateStack") }}
+                        <span v-if="imageUpdates && imageUpdates.updates > 0" class="badge bg-warning text-dark ms-1">{{ imageUpdates.updates }}</span>
                     </button>
 
                     <button v-if="!isEditMode && active" class="btn btn-normal" :disabled="processing" @click="stopStack">
@@ -50,6 +51,18 @@
                         <BDropdownItem @click="downStack">
                             <font-awesome-icon icon="stop" class="me-1" />
                             {{ $t("downStack") }}
+                        </BDropdownItem>
+                        <BDropdownItem v-if="!isEditMode" @click="checkImageUpdates">
+                            <font-awesome-icon icon="arrows-rotate" class="me-1" />
+                            {{ $t("checkImageUpdates") }}
+                        </BDropdownItem>
+                        <BDropdownItem v-if="!isEditMode" @click="openFolderDialog">
+                            <font-awesome-icon icon="folder" class="me-1" />
+                            {{ $t("moveToFolder") }}
+                        </BDropdownItem>
+                        <BDropdownItem v-if="!isEditMode" @click="openRenameDialog">
+                            <font-awesome-icon icon="pen" class="me-1" />
+                            {{ $t("renameStack") }}
                         </BDropdownItem>
                     </BDropdown>
                 </div>
@@ -130,6 +143,7 @@
                             :first="name === Object.keys(jsonConfig.services)[0]"
                             :serviceStatus="serviceStatusList[name]"
                             :dockerStats="dockerStats"
+                            :updateInfo="imageUpdates?.services?.[name] ?? null"
                             @start-service="startService"
                             @stop-service="stopService"
                             @restart-service="restartService"
@@ -152,60 +166,115 @@
                         </div>
                     </div>
 
-                    <!-- Combined Terminal Output -->
+                    <!-- Logs: all services (combined) or a single service -->
                     <div v-show="!isEditMode">
-                        <h4 class="mb-3">{{ $t("terminal") }}</h4>
-                        <Terminal
-                            ref="combinedTerminal"
-                            class="mb-3 terminal"
-                            :name="combinedTerminalName"
-                            :endpoint="endpoint"
-                            :rows="combinedTerminalRows"
-                            :cols="combinedTerminalCols"
-                            style="height: 315px;"
-                        ></Terminal>
+                        <ExpandableBox :title="$t('terminal')" resizable storage-key="stackLogs" :height="315" :min-height="150" class="mb-3">
+                            <template #actions>
+                                <div v-if="serviceNames.length > 1" class="log-tabs" role="group">
+                                    <button
+                                        type="button"
+                                        class="btn btn-sm"
+                                        :class="logService === '' ? 'btn-primary' : 'btn-normal'"
+                                        @click="selectLogService('')"
+                                    >
+                                        {{ $t("allServices") }}
+                                    </button>
+                                    <button
+                                        v-for="serviceName in serviceNames"
+                                        :key="serviceName"
+                                        type="button"
+                                        class="btn btn-sm"
+                                        :class="logService === serviceName ? 'btn-primary' : 'btn-normal'"
+                                        @click="selectLogService(serviceName)"
+                                    >
+                                        {{ serviceName }}
+                                    </button>
+                                </div>
+                            </template>
+                            <Terminal
+                                :key="logTerminalName"
+                                class="terminal"
+                                :name="logTerminalName"
+                                :endpoint="endpoint"
+                                :rows="combinedTerminalRows"
+                                :cols="combinedTerminalCols"
+                            ></Terminal>
+                        </ExpandableBox>
                     </div>
                 </div>
                 <div class="col-lg-6">
-                    <h4 class="mb-3">{{ stack.composeFileName }}</h4>
-
                     <!-- YAML editor -->
-                    <div class="shadow-box mb-3 editor-box" :class="{'edit-mode' : isEditMode}">
-                        <code-mirror
-                            ref="editor"
-                            v-model="stack.composeYAML"
-                            :extensions="extensions"
-                            minimal
-                            wrap="true"
-                            dark="true"
-                            tab="true"
-                            :disabled="!isEditMode"
-                            :hasFocus="editorFocus"
-                            @change="yamlCodeChange"
-                        />
-                    </div>
-                    <div v-if="isEditMode" class="mb-3">
-                        {{ yamlError }}
-                    </div>
+                    <ExpandableBox :title="stack.composeFileName" class="mb-3">
+                        <template #actions="{ expanded }">
+                            <button v-if="isEditMode" class="btn btn-sm btn-normal" :title="$t('insertHostPathHint')" @click="insertHostPath">
+                                <font-awesome-icon icon="folder-open" class="me-1" />
+                                {{ $t("insertHostPath") }}
+                            </button>
+                            <template v-if="expanded && isEditMode">
+                                <button class="btn btn-sm btn-primary" :disabled="processing" @click="deployStack">
+                                    <font-awesome-icon icon="rocket" class="me-1" />
+                                    {{ $t("deployStack") }}
+                                </button>
+                                <button class="btn btn-sm btn-normal" :disabled="processing" @click="saveStack">
+                                    <font-awesome-icon icon="save" class="me-1" />
+                                    {{ $t("saveStackDraft") }}
+                                </button>
+                            </template>
+                        </template>
+                        <template #default="{ expanded }">
+                            <div class="shadow-box editor-box" :class="{'edit-mode' : isEditMode, 'fill': expanded}">
+                                <code-mirror
+                                    ref="editor"
+                                    v-model="stack.composeYAML"
+                                    :extensions="extensions"
+                                    minimal
+                                    wrap="true"
+                                    :dark="$root.isDark"
+                                    tab="true"
+                                    :disabled="!isEditMode"
+                                    :hasFocus="editorFocus"
+                                    @change="yamlCodeChange"
+                                />
+                            </div>
+                        </template>
+                        <template #footer>
+                            <div v-if="isEditMode && yamlError" class="mt-2 yaml-error">
+                                {{ yamlError }}
+                            </div>
+                        </template>
+                    </ExpandableBox>
 
-                    <!-- ENV editor -->
-                    <div v-if="isEditMode">
-                        <h4 class="mb-3">.env</h4>
-                        <div class="shadow-box mb-3 editor-box" :class="{'edit-mode' : isEditMode}">
-                            <code-mirror
-                                ref="editor"
-                                v-model="stack.composeENV"
-                                :extensions="extensionsEnv"
-                                minimal
-                                wrap="true"
-                                dark="true"
-                                tab="true"
-                                :disabled="!isEditMode"
-                                :hasFocus="editorFocus"
-                                @change="yamlCodeChange"
-                            />
-                        </div>
-                    </div>
+                    <!-- ENV editor (read-only when not in edit mode) -->
+                    <ExpandableBox v-if="isEditMode || stack.composeENV" title=".env" class="mb-3">
+                        <template #actions="{ expanded }">
+                            <template v-if="expanded && isEditMode">
+                                <button class="btn btn-sm btn-primary" :disabled="processing" @click="deployStack">
+                                    <font-awesome-icon icon="rocket" class="me-1" />
+                                    {{ $t("deployStack") }}
+                                </button>
+                                <button class="btn btn-sm btn-normal" :disabled="processing" @click="saveStack">
+                                    <font-awesome-icon icon="save" class="me-1" />
+                                    {{ $t("saveStackDraft") }}
+                                </button>
+                            </template>
+                        </template>
+                        <template #default="{ expanded }">
+                            <div class="shadow-box editor-box" :class="{'edit-mode' : isEditMode, 'fill': expanded}">
+                                <code-mirror
+                                    ref="editorEnv"
+                                    v-model="stack.composeENV"
+                                    :extensions="extensionsEnv"
+                                    minimal
+                                    wrap="true"
+                                    :dark="$root.isDark"
+                                    tab="true"
+                                    :disabled="!isEditMode"
+                                    :hasFocus="editorFocus"
+                                    @change="yamlCodeChange"
+                                />
+                            </div>
+                        </template>
+                    </ExpandableBox>
 
                     <div v-if="isEditMode">
                         <!-- Volumes -->
@@ -237,6 +306,40 @@
                 {{ $t("stackNotManagedByDockgeMsg") }}
             </div>
 
+            <PathPicker ref="pathPicker" :endpoint="endpoint" />
+
+            <!-- Folder Dialog -->
+            <BModal v-model="showFolderDialog" :title="$t('moveToFolder')" :cancelTitle="$t('cancel')" :okTitle="$t('moveToFolder')" @ok="setFolder">
+                <label for="stack-folder" class="form-label">{{ $t("folder") }}</label>
+                <input id="stack-folder" v-model="folderInput" type="text" class="form-control" list="stack-folder-list" placeholder="media/arr" @keyup.enter="setFolder(); showFolderDialog = false">
+                <datalist id="stack-folder-list">
+                    <option v-for="folder in existingFolders" :key="folder" :value="folder" />
+                </datalist>
+                <div class="form-text">{{ $t("folderHelp") }}</div>
+            </BModal>
+
+            <!-- Rename Dialog -->
+            <BModal v-model="showRenameDialog" :title="$t('renameStack')" :cancelTitle="$t('cancel')" :okTitle="$t('renameStack')" :okDisabled="!renameNewName || renameNewName === stack.name" @ok="renameStack">
+                <label for="rename-stack" class="form-label">{{ $t("newStackName") }}</label>
+                <input id="rename-stack" v-model="renameNewName" type="text" class="form-control" @input="renameNewName = renameNewName.toLowerCase()" @keyup.enter="renameStack(); showRenameDialog = false">
+                <div class="form-text">{{ $t("Lowercase only") }}</div>
+
+                <div class="alert alert-warning mt-3 mb-0">
+                    {{ $t("renameStackWarning") }}
+                </div>
+
+                <div v-if="renameVolumes.length > 0" class="mt-3">
+                    <p class="mb-2">
+                        {{ $t("renameStackVolumesWarning") }}
+                        <code v-for="volume in renameVolumes" :key="volume" class="me-2">{{ volume }}</code>
+                    </p>
+                    <div class="form-check">
+                        <input id="rename-keep-volumes" v-model="renameKeepVolumes" class="form-check-input" type="checkbox">
+                        <label class="form-check-label" for="rename-keep-volumes">{{ $t("renameStackKeepVolumes") }}</label>
+                    </div>
+                </div>
+            </BModal>
+
             <!-- Delete Dialog -->
             <BModal v-model="showDeleteDialog" :cancelTitle="$t('cancel')" :okTitle="$t('deleteStack')" okVariant="danger" @ok="deleteDialog">
                 {{ $t("deleteStackMsg") }}
@@ -249,7 +352,7 @@
 import CodeMirror from "vue-codemirror6";
 import { yaml } from "@codemirror/lang-yaml";
 import { python } from "@codemirror/lang-python";
-import { dracula as editorTheme } from "thememirror";
+import { dracula as editorThemeDark, tomorrow as editorThemeLight } from "thememirror";
 import { lineNumbers, EditorView } from "@codemirror/view";
 import { parseDocument, Document } from "yaml";
 
@@ -260,11 +363,14 @@ import {
     copyYAMLComments, envsubstYAML,
     getCombinedTerminalName,
     getComposeTerminalName,
+    getServiceLogTerminalName,
     PROGRESS_TERMINAL_ROWS,
     RUNNING
 } from "../../../common/util-common";
 import { BModal } from "bootstrap-vue-next";
 import NetworkInput from "../components/NetworkInput.vue";
+import ExpandableBox from "../components/ExpandableBox.vue";
+import PathPicker from "../components/PathPicker.vue";
 import dotenv from "dotenv";
 import { ref } from "vue";
 
@@ -286,9 +392,17 @@ let dockerStatsTimeout = null;
 export default {
     components: {
         NetworkInput,
+        ExpandableBox,
+        PathPicker,
         FontAwesomeIcon,
         CodeMirror,
         BModal,
+    },
+    provide() {
+        return {
+            // Used by the volume path picker (ArrayInput)
+            composeEndpoint: () => this.endpoint,
+        };
     },
     beforeRouteUpdate(to, from, next) {
         this.exitConfirm(next);
@@ -304,23 +418,18 @@ export default {
             return null;
         };
 
-        const extensions = [
-            editorTheme,
-            yaml(),
-            lineNumbers(),
-            EditorView.focusChangeEffect.of(focusEffectHandler)
-        ];
+        const focusEffect = EditorView.focusChangeEffect.of(focusEffectHandler);
+        const yamlLanguage = yaml();
+        const envLanguage = python();
+        const lineNumbersExtension = lineNumbers();
 
-        const extensionsEnv = [
-            editorTheme,
-            python(),
-            lineNumbers(),
-            EditorView.focusChangeEffect.of(focusEffectHandler)
-        ];
-
-        return { extensions,
-            extensionsEnv,
-            editorFocus };
+        return {
+            focusEffect,
+            yamlLanguage,
+            envLanguage,
+            lineNumbersExtension,
+            editorFocus,
+        };
     },
     yamlDoc: null,  // For keeping the yaml comments
     data() {
@@ -344,9 +453,30 @@ export default {
             newContainerName: "",
             stopServiceStatusTimeout: false,
             stopDockerStatsTimeout: false,
+            // Service whose logs are shown in the terminal, "" = all services
+            logService: "",
+            showRenameDialog: false,
+            showFolderDialog: false,
+            folderInput: "",
+            renameNewName: "",
+            renameVolumes: [],
+            renameKeepVolumes: true,
         };
     },
     computed: {
+        // The dark theme (dracula) is unreadable on the white background of the light theme
+        editorTheme() {
+            return this.$root.isDark ? editorThemeDark : editorThemeLight;
+        },
+
+        extensions() {
+            return [ this.editorTheme, this.yamlLanguage, this.lineNumbersExtension, this.focusEffect ];
+        },
+
+        extensionsEnv() {
+            return [ this.editorTheme, this.envLanguage, this.lineNumbersExtension, this.focusEffect ];
+        },
+
         endpointDisplay() {
             return this.$root.endpointDisplayFunction(this.endpoint);
         },
@@ -394,6 +524,11 @@ export default {
             return this.globalStack?.status;
         },
 
+        /** Result of the last image update check of this stack */
+        imageUpdates() {
+            return this.globalStack?.imageUpdates ?? null;
+        },
+
         active() {
             return this.status === RUNNING;
         },
@@ -410,6 +545,41 @@ export default {
                 return "";
             }
             return getCombinedTerminalName(this.endpoint, this.stack.name);
+        },
+
+        /**
+         * Folders already used by the stacks of the same endpoint, including parent folders
+         * @returns {string[]} Folder paths
+         */
+        existingFolders() {
+            const set = new Set();
+            for (const stack of Object.values(this.$root.completeStackList)) {
+                if ((stack.endpoint || "") !== (this.endpoint || "") || !stack.folder) {
+                    continue;
+                }
+                const parts = stack.folder.split("/");
+                for (let i = 1; i <= parts.length; i++) {
+                    set.add(parts.slice(0, i).join("/"));
+                }
+            }
+            return [ ...set ].sort();
+        },
+
+        logTerminalName() {
+            if (!this.stack.name) {
+                return "";
+            }
+            if (this.logService === "") {
+                return this.combinedTerminalName;
+            }
+            return getServiceLogTerminalName(this.endpoint, this.stack.name, this.logService);
+        },
+
+        serviceNames() {
+            if (!this.jsonConfig.services || typeof this.jsonConfig.services !== "object") {
+                return [];
+            }
+            return Object.keys(this.jsonConfig.services);
         },
 
         networks() {
@@ -451,6 +621,13 @@ export default {
 
         jsonConfig: {
             handler() {
+                // jsonConfig was just parsed from the YAML text (load, typing, discard...):
+                // do not write it back, it would reformat the user's file and drop its style
+                if (this.jsonConfigFromYAML) {
+                    this.jsonConfigFromYAML = false;
+                    return;
+                }
+
                 if (!this.editorFocus) {
                     console.debug("jsonConfig changed");
 
@@ -581,6 +758,34 @@ export default {
             // Leave Combined Terminal
             console.debug("leaveCombinedTerminal", this.endpoint, this.stack.name);
             this.$root.emitAgent(this.endpoint, "leaveCombinedTerminal", this.stack.name, () => {});
+
+            // Leave the log terminal of a single service
+            if (this.logService) {
+                this.$root.emitAgent(this.endpoint, "leaveLogTerminal", this.stack.name, this.logService, () => {});
+            }
+        },
+
+        /**
+         * Show the logs of all services ("") or of a single service
+         * @param {string} serviceName Service name
+         * @returns {void}
+         */
+        selectLogService(serviceName) {
+            if (serviceName === this.logService || !this.stack.name) {
+                return;
+            }
+
+            this.$root.emitAgent(this.endpoint, "leaveLogTerminal", this.stack.name, this.logService, () => {});
+            this.logService = serviceName;
+
+            // Wait for the new <Terminal> to be mounted and bound, so it receives the output from the very beginning
+            this.$nextTick(() => {
+                this.$root.emitAgent(this.endpoint, "joinLogTerminal", this.stack.name, serviceName, (res) => {
+                    if (!res.ok) {
+                        this.$root.toastRes(res);
+                    }
+                });
+            });
         },
 
         bindTerminal() {
@@ -703,6 +908,81 @@ export default {
             });
         },
 
+        /**
+         * Pick a folder of the host and insert it at the cursor of the compose.yaml editor
+         * @returns {Promise<void>}
+         */
+        async insertHostPath() {
+            const view = this.$refs.editor?.view;
+            const picked = await this.$refs.pathPicker.open("");
+            if (!picked || !view) {
+                return;
+            }
+            view.dispatch(view.state.replaceSelection(picked));
+            view.focus();
+            this.$nextTick(() => this.yamlCodeChange());
+        },
+
+        checkImageUpdates() {
+            this.processing = true;
+            this.$root.emitAgent(this.endpoint, "checkImageUpdates", this.stack.name, (res) => {
+                this.processing = false;
+                this.$root.toastRes(res);
+            });
+        },
+
+        openFolderDialog() {
+            this.folderInput = this.globalStack?.folder ?? "";
+            this.showFolderDialog = true;
+        },
+
+        setFolder() {
+            this.$root.emitAgent(this.endpoint, "setStackFolder", this.stack.name, this.folderInput, (res) => {
+                if (!res.ok) {
+                    this.$root.toastRes(res);
+                    return;
+                }
+                // The compose file changed on disk, reload it unless the user is editing
+                if (!this.isEditMode) {
+                    this.loadStack();
+                }
+            });
+        },
+
+        openRenameDialog() {
+            this.renameNewName = this.stack.name;
+            this.renameVolumes = [];
+            this.renameKeepVolumes = true;
+            this.showRenameDialog = true;
+
+            this.$root.emitAgent(this.endpoint, "getProjectScopedVolumes", this.stack.name, (res) => {
+                if (res.ok) {
+                    this.renameVolumes = res.volumes;
+                }
+            });
+        },
+
+        renameStack() {
+            const newName = this.renameNewName.trim();
+            if (!newName || newName === this.stack.name) {
+                return;
+            }
+
+            this.processing = true;
+            this.$root.emitAgent(this.endpoint, "renameStack", this.stack.name, newName, this.renameKeepVolumes, (res) => {
+                this.processing = false;
+                this.$root.toastRes(res);
+
+                if (res.ok) {
+                    if (this.endpoint) {
+                        this.$router.push(`/compose/${newName}/${this.endpoint}`);
+                    } else {
+                        this.$router.push(`/compose/${newName}`);
+                    }
+                }
+            });
+        },
+
         deleteDialog() {
             this.$root.emitAgent(this.endpoint, "deleteStack", this.stack.name, (res) => {
                 this.$root.toastRes(res);
@@ -746,6 +1026,7 @@ export default {
                 let { config, doc } = this.yamlToJSON(this.stack.composeYAML);
 
                 this.yamlDoc = doc;
+                this.jsonConfigFromYAML = true;
                 this.jsonConfig = config;
 
                 let env = dotenv.parse(this.stack.composeENV);
@@ -856,6 +1137,42 @@ export default {
 .editor-box {
     font-family: 'JetBrains Mono', monospace;
     font-size: 14px;
+
+    // Fullscreen: the editor fills the whole box and scrolls internally
+    &.fill {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+
+        :deep(.vue-codemirror) {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        :deep(.cm-editor) {
+            flex: 1;
+            min-height: 0;
+        }
+
+        :deep(.cm-scroller) {
+            overflow: auto;
+        }
+    }
+}
+
+.yaml-error {
+    color: $danger;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+}
+
+.log-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
 }
 
 .agent-name {

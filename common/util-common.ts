@@ -205,6 +205,27 @@ export function getCombinedTerminalName(endpoint : string, stack : string) {
     return "combined-" + endpoint + "-" + stack;
 }
 
+/**
+ * Terminal that follows the logs of a single service of a stack.
+ * ":" is not allowed in stack names, so it cannot collide with another stack's terminal.
+ * @param endpoint Endpoint
+ * @param stack Stack name
+ * @param service Service name
+ */
+export function getServiceLogTerminalName(endpoint : string, stack : string, service : string) {
+    return "service-log-" + endpoint + "-" + stack + ":" + service;
+}
+
+/**
+ * Valid compose service name
+ * https://github.com/compose-spec/compose-spec/blob/main/schema/compose-spec.json ("^[a-zA-Z0-9._-]+$")
+ * The leading character must not be "-", so that it can never be parsed as a command line option.
+ * @param name Service name
+ */
+export function isValidServiceName(name : unknown) : name is string {
+    return typeof(name) === "string" && /^[a-zA-Z0-9._][a-zA-Z0-9._-]*$/.test(name);
+}
+
 export function getContainerTerminalName(endpoint : string, container : string) {
     return "container-" + endpoint + "-" + container;
 }

@@ -3,20 +3,24 @@
         <div>
             <h1 class="mb-3">{{ $t("terminal") }} - {{ serviceName }} ({{ stackName }})</h1>
 
-            <div class="mb-3">
-                <router-link :to="sh" class="btn btn-normal me-2">{{ $t("Switch to sh") }}</router-link>
-            </div>
-
-            <Terminal class="terminal" :rows="20" mode="interactive" :name="terminalName" :stack-name="stackName" :service-name="serviceName" :shell="shell" :endpoint="endpoint"></Terminal>
+            <ExpandableBox :title="`${serviceName} (${shell})`" title-tag="h5" resizable storage-key="containerTerminal" :height="defaultHeight" :min-height="200">
+                <template #actions>
+                    <span class="copy-hint d-none d-md-inline">{{ $t("terminalCopyPasteHint") }}</span>
+                    <router-link v-if="shell !== 'sh'" :to="sh" class="btn btn-sm btn-normal">{{ $t("Switch to sh") }}</router-link>
+                </template>
+                <Terminal class="terminal" :rows="20" mode="interactive" :name="terminalName" :stack-name="stackName" :service-name="serviceName" :shell="shell" :endpoint="endpoint"></Terminal>
+            </ExpandableBox>
         </div>
     </transition>
 </template>
 
 <script>
 import { getContainerExecTerminalName } from "../../../common/util-common";
+import ExpandableBox from "../components/ExpandableBox.vue";
 
 export default {
     components: {
+        ExpandableBox,
     },
     data() {
         return {
@@ -24,6 +28,9 @@ export default {
         };
     },
     computed: {
+        defaultHeight() {
+            return Math.max(400, window.innerHeight - 330);
+        },
         stackName() {
             return this.$route.params.stackName;
         },
@@ -69,7 +76,10 @@ export default {
 </script>
 
 <style scoped lang="scss">
-.terminal {
-    height: 410px;
+@import "../styles/vars.scss";
+
+.copy-hint {
+    font-size: 12px;
+    color: $dark-font-color3;
 }
 </style>

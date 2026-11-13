@@ -36,6 +36,39 @@
                 </div>
                 <!-- Right -->
                 <div class="col-md-5">
+                    <!-- Image updates -->
+                    <div class="shadow-box big-padding mb-4">
+                        <div class="d-flex align-items-center mb-3 gap-2">
+                            <h4 class="mb-0 flex-grow-1">{{ $t("imageUpdates") }}</h4>
+                            <button class="btn btn-sm btn-normal" :disabled="checkingUpdates > 0" @click="checkAllImageUpdates">
+                                <font-awesome-icon icon="arrows-rotate" :spin="checkingUpdates > 0" class="me-1" />
+                                {{ $t("checkNow") }}
+                            </button>
+                        </div>
+
+                        <div v-if="stacksWithUpdates.length === 0" class="text-muted">
+                            {{ $t("noImageUpdates") }}
+                        </div>
+
+                        <router-link v-for="item in stacksWithUpdates" :key="item.key" :to="item.url" class="update-row">
+                            <div class="d-flex align-items-center">
+                                <font-awesome-icon icon="arrow-alt-circle-up" class="me-2 update-icon" />
+                                <strong class="flex-grow-1">{{ item.name }}</strong>
+                                <span v-if="$root.agentCount > 1" class="text-muted small me-2">{{ item.endpointDisplay }}</span>
+                                <span class="badge bg-warning text-dark">{{ item.updates }}</span>
+                            </div>
+                            <div class="small update-services">
+                                <span v-for="service in item.services" :key="service.name" class="me-2">
+                                    {{ service.name }} ({{ service.image }}){{ service.status === "recreate" ? " - " + $t("imageStatus_recreate") : "" }}
+                                </span>
+                            </div>
+                        </router-link>
+
+                        <div class="form-text mt-2">
+                            {{ $t("lastCheck") }}: {{ lastImageCheck }}
+                        </div>
+                    </div>
+
                     <!-- Agent List -->
                     <div class="shadow-box big-padding">
                         <h4 class="mb-3">{{ $tc("dockgeAgent", 2) }} <span class="badge bg-warning" style="font-size: 12px;">beta</span></h4>
@@ -126,6 +159,7 @@ export default {
     },
     data() {
         return {
+            checkingUpdates: 0,
             page: 1,
             perPage: 25,
             initialPerPage: 25,
@@ -151,6 +185,39 @@ export default {
     },
 
     computed: {
+        /** Stacks with newer images, from the last check */
+        stacksWithUpdates() {
+            const list = [];
+            for (const [ key, stack ] of Object.entries(this.$root.completeStackList)) {
+                const info = stack.imageUpdates;
+                if (!info || info.updates <= 0) {
+                    continue;
+                }
+                list.push({
+                    key,
+                    name: stack.name,
+                    updates: info.updates,
+                    endpointDisplay: this.$root.endpointDisplayFunction(stack.endpoint),
+                    url: stack.endpoint ? `/compose/${stack.name}/${stack.endpoint}` : `/compose/${stack.name}`,
+                    services: Object.entries(info.services)
+                        .filter(([ , service ]) => service.status === "update" || service.status === "recreate")
+                        .map(([ name, service ]) => ({
+                            name,
+                            ...service,
+                        })),
+                });
+            }
+            return list.sort((a, b) => a.name.localeCompare(b.name));
+        },
+
+        lastImageCheck() {
+            let last = 0;
+            for (const stack of Object.values(this.$root.completeStackList)) {
+                last = Math.max(last, stack.imageUpdates?.checkedAt ?? 0);
+            }
+            return last ? new Date(last).toLocaleString() : this.$t("never");
+        },
+
         activeNum() {
             return this.getStatusNum("active");
         },
@@ -186,6 +253,25 @@ export default {
     },
 
     methods: {
+        /** Check all stacks of all the Dockge instances */
+        checkAllImageUpdates() {
+            const endpoints = Object.keys(this.$root.agentList);
+            if (endpoints.length === 0) {
+                endpoints.push("");
+            }
+            for (const endpoint of endpoints) {
+                if (this.$root.agentStatusList[endpoint] && this.$root.agentStatusList[endpoint] !== "online") {
+                    continue;
+                }
+                this.checkingUpdates++;
+                this.$root.emitAgent(endpoint, "checkImageUpdates", "", (res) => {
+                    this.checkingUpdates--;
+                    if (!res.ok) {
+                        this.$root.toastRes(res);
+                    }
+                });
+            }
+        },
 
         addAgent() {
             this.connectingAgent = true;
@@ -324,6 +410,29 @@ export default {
 </script>
 
 <style lang="scss" scoped>
+.update-row {
+    display: block;
+    padding: 8px 10px;
+    margin: 0 -10px;
+    border-radius: 10px;
+    text-decoration: none;
+    color: inherit;
+
+    &:hover {
+        background-color: rgba(128, 128, 128, 0.12);
+    }
+
+    .update-icon {
+        color: #f8a306;
+    }
+
+    .update-services {
+        padding-left: 24px;
+        color: #8a929b;
+        word-break: break-all;
+    }
+}
+
 @import "../styles/vars";
 
 .num {

@@ -3,7 +3,12 @@
         <div v-if="!processing">
             <h1 class="mb-3">{{ $t("console") }}</h1>
 
-            <Terminal v-if="enableConsole" class="terminal" :rows="20" mode="mainTerminal" name="console" :endpoint="endpoint"></Terminal>
+            <ExpandableBox v-if="enableConsole" title="" resizable storage-key="console" :height="defaultHeight" :min-height="200">
+                <template #title>
+                    <span class="copy-hint">{{ $t("terminalCopyPasteHint") }}</span>
+                </template>
+                <Terminal class="terminal" :rows="20" mode="mainTerminal" name="console" :endpoint="endpoint"></Terminal>
+            </ExpandableBox>
 
             <div v-else class="alert alert-warning shadow-box" role="alert">
                 <h4 class="alert-heading">{{ $t("Console is not enabled") }}</h4>
@@ -29,8 +34,11 @@
 </template>
 
 <script>
+import ExpandableBox from "../components/ExpandableBox.vue";
+
 export default {
     components: {
+        ExpandableBox,
     },
     data() {
         return {
@@ -39,6 +47,9 @@ export default {
         };
     },
     computed: {
+        defaultHeight() {
+            return Math.max(400, window.innerHeight - 300);
+        },
         endpoint() {
             return this.$route.params.endpoint || "";
         },
@@ -56,7 +67,10 @@ export default {
 </script>
 
 <style scoped lang="scss">
-.terminal {
-    height: 410px;
+@import "../styles/vars.scss";
+
+.copy-hint {
+    font-size: 12px;
+    color: $dark-font-color3;
 }
 </style>

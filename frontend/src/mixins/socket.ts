@@ -69,6 +69,12 @@ export default defineComponent({
             return list;
         },
 
+        /** Number of stacks with newer images available (all endpoints) */
+        imageUpdateCount() : number {
+            return Object.values(this.completeStackList as Record<string, { imageUpdates? : { updates : number } }>)
+                .filter((stack) => (stack.imageUpdates?.updates ?? 0) > 0).length;
+        },
+
         usernameFirstChar() {
             if (typeof this.username == "string" && this.username.length >= 1) {
                 return this.username.charAt(0).toUpperCase();

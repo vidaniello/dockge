@@ -3,6 +3,10 @@ import { DockgeServer } from "../dockge-server";
 import { callbackError, callbackResult, checkLogin, DockgeSocket, ValidationError } from "../util-server";
 import { Stack } from "../stack";
 import { AgentSocket } from "../../common/agent-socket";
+import { listDirectory } from "../file-browser";
+import { getHostIPs } from "../host-ips";
+import { imageUpdateChecker } from "../image-update-checker";
+import { log } from "../log";
 
 export class DockerSocketHandler extends AgentSocketHandler {
     create(socket : DockgeSocket, server : DockgeServer, agentSocket : AgentSocket) {
@@ -187,12 +191,181 @@ export class DockerSocketHandler extends AgentSocketHandler {
 
                 const stack = await Stack.getStack(server, stackName);
                 await stack.update(socket);
+
+                // Refresh the update badge of this stack
+                imageUpdateChecker.checkStack(stackName).catch((e) => log.debug("image-update", String(e)));
                 callbackResult({
                     ok: true,
                     msg: "Updated",
                     msgi18n: true,
                 }, callback);
                 server.sendStackList();
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Check if newer images are available, for one stack or for all stacks ("")
+        agentSocket.on("checkImageUpdates", async (stackName : unknown, callback) => {
+            try {
+                checkLogin(socket);
+
+                if (typeof(stackName) !== "string") {
+                    throw new ValidationError("Stack name must be a string");
+                }
+
+                if (stackName) {
+                    await imageUpdateChecker.checkStack(stackName);
+                } else {
+                    await imageUpdateChecker.checkAll();
+                }
+
+                callbackResult({
+                    ok: true,
+                    msg: "imageUpdateCheckDone",
+                    msgi18n: true,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // IP addresses of the host, to bind published ports to a specific IP
+        agentSocket.on("getHostIPs", async (callback) => {
+            try {
+                checkLogin(socket);
+                callbackResult({
+                    ok: true,
+                    ...(await getHostIPs()),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Browse the host folders mounted into Dockge (read-only), for the volume path picker
+        agentSocket.on("listDirectory", async (dirPath : unknown, showFiles : unknown, callback) => {
+            try {
+                checkLogin(socket);
+
+                if (typeof(dirPath) !== "string") {
+                    throw new ValidationError("Path must be a string");
+                }
+
+                callbackResult({
+                    ok: true,
+                    ...(await listDirectory(dirPath, showFiles === true)),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Move a stack to a virtual folder of the sidebar ("" = no folder)
+        agentSocket.on("setStackFolder", async (stackName : unknown, folder : unknown, callback) => {
+            try {
+                checkLogin(socket);
+
+                if (typeof(stackName) !== "string" || typeof(folder) !== "string") {
+                    throw new ValidationError("Stack name and folder must be strings");
+                }
+
+                const stack = await Stack.getStack(server, stackName);
+                await stack.setFolder(folder);
+                server.sendStackList();
+
+                callbackResult({
+                    ok: true,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Rename / move a virtual folder: updates every stack inside it (and in its sub folders)
+        agentSocket.on("renameStackFolder", async (oldFolder : unknown, newFolder : unknown, callback) => {
+            try {
+                checkLogin(socket);
+
+                if (typeof(oldFolder) !== "string" || typeof(newFolder) !== "string") {
+                    throw new ValidationError("Folders must be strings");
+                }
+
+                const from = Stack.normalizeFolder(oldFolder);
+                const to = Stack.normalizeFolder(newFolder);
+
+                if (!from) {
+                    throw new ValidationError("Invalid folder");
+                }
+
+                if (to === from || to.startsWith(from + "/")) {
+                    throw new ValidationError("A folder cannot be moved inside itself");
+                }
+
+                const stackList = await Stack.getStackList(server);
+                let count = 0;
+
+                for (const stack of stackList.values()) {
+                    if (!stack.isManagedByDockge) {
+                        continue;
+                    }
+                    const folder = stack.folder;
+                    if (folder === from || folder.startsWith(from + "/")) {
+                        await stack.setFolder(to + folder.slice(from.length));
+                        count++;
+                    }
+                }
+
+                server.sendStackList();
+                callbackResult({
+                    ok: true,
+                    count,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Rename stack
+        agentSocket.on("renameStack", async (stackName : unknown, newName : unknown, keepVolumes : unknown, callback) => {
+            try {
+                checkLogin(socket);
+
+                if (typeof(stackName) !== "string" || typeof(newName) !== "string") {
+                    throw new ValidationError("Stack name must be a string");
+                }
+
+                const stack = await Stack.getStack(server, stackName);
+                try {
+                    await stack.rename(socket, newName, keepVolumes === true);
+                } finally {
+                    server.sendStackList();
+                }
+
+                callbackResult({
+                    ok: true,
+                    msg: "Renamed",
+                    msgi18n: true,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Named volumes that would be recreated empty after a rename
+        agentSocket.on("getProjectScopedVolumes", async (stackName : unknown, callback) => {
+            try {
+                checkLogin(socket);
+
+                if (typeof(stackName) !== "string") {
+                    throw new ValidationError("Stack name must be a string");
+                }
+
+                const stack = await Stack.getStack(server, stackName);
+                callbackResult({
+                    ok: true,
+                    volumes: stack.getProjectScopedVolumes(),
+                }, callback);
             } catch (e) {
                 callbackError(e, callback);
             }

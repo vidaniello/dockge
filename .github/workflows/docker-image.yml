@@ -1,0 +1,90 @@
+# Build the Docker image of this fork and publish it to the GitHub Container Registry:
+#   ghcr.io/<owner>/<repo>
+#
+# Tags:
+#   - latest          every push to master
+#   - 1.2.3 / 1.2     when a tag like v1.2.3 is pushed
+#   - sha-xxxxxxx     every build
+#   - <branch>        when the workflow is started by hand on another branch
+#
+# The package is private by default: make it public (or log in on the server with a token)
+# from GitHub > Packages > dockge > Package settings.
+
+name: Docker image (GHCR)
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+    paths-ignore:
+      - "*.md"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-fund --no-audit
+
+      # The image copies the prebuilt frontend (frontend-dist), it does not build it
+      - name: Build frontend
+        run: npm run build:frontend
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch,enable=${{ github.ref != 'refs/heads/master' }}
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          target: release
+          # TrueNAS SCALE is amd64 only. Add linux/arm64 here (and docker/setup-qemu-action above) if needed.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -24,6 +24,9 @@
                 <li v-if="$root.loggedIn" class="nav-item me-2">
                     <router-link to="/" class="nav-link">
                         <font-awesome-icon icon="home" /> {{ $t("home") }}
+                        <span v-if="$root.imageUpdateCount > 0" class="badge rounded-pill bg-warning text-dark ms-1" :title="$t('imageUpdatesAvailable', [ $root.imageUpdateCount ])">
+                            <font-awesome-icon icon="arrow-alt-circle-up" /> {{ $root.imageUpdateCount }}
+                        </span>
                     </router-link>
                 </li>
 
