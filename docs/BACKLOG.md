@@ -61,3 +61,18 @@ Oggi la Console (`DOCKGE_ENABLE_CONSOLE=true`) è "a righe": il testo resta nel 
 - **Shell automatica**: provare `bash` e, se non c'è (immagini Alpine / busybox), usare `sh` senza dover premere "Switch to sh".
 - **Utente**: scegliere con quale utente entrare (es. `root`), utile quando l'immagine gira con un utente senza permessi (`docker compose exec --user`).
 - **Più sessioni**: aprire più terminali sullo stesso servizio, in schede. Oggi il nome del terminale usa sempre l'indice 0 (`getContainerExecTerminalName(..., 0)`).
+
+## 6. Sapere quale versione del fork è in esecuzione
+
+L'immagine usata è `ghcr.io/vidaniello/dockge:latest` e in Impostazioni → Informazioni la versione è quella di `package.json` (1.5.0, la stessa dell'originale): non si capisce quale build del fork sta girando.
+
+- **Informazioni di build nell'immagine**: il workflow `docker-image.yml` passa al build il commit (SHA corto), la data e il tag, per esempio come `--build-arg` salvati in variabili d'ambiente o in un file `build-info.json`. Dockge li mostra in Informazioni (con link al commit su GitHub), nel menu utente o a piè di pagina, e in `get_info` delle API.
+- **Numerazione propria**: per esempio `1.5.0-vidaniello.N`, oppure tag `v1.6.0-fork.1`. Con un tag `v*` il workflow pubblica già le immagini `1.6.0` e `1.6`.
+- **Controllo aggiornamenti di Dockge**: oggi chiede la versione a `dockge.kuma.pet`, cioè al progetto originale, e il pulsante "nuovo aggiornamento" porta alle release di louislam. Va puntato alle release del fork (API GitHub di `vidaniello/dockge`) oppure disattivato.
+- **Oggi, senza modifiche**:
+  - il workflow pubblica anche il tag `sha-<commit>`: usarlo al posto di `latest` sul server di prova per sapere esattamente cosa gira;
+  - l'immagine ha già le etichette OCI con commit e data di build:
+
+    ```bash
+    docker image inspect ghcr.io/vidaniello/dockge:latest --format '{{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "org.opencontainers.image.created"}}'
+    ```
