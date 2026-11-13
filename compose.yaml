@@ -1,6 +1,7 @@
 services:
   dockge:
-    image: louislam/dockge:1
+    # Image built from this fork by .github/workflows/docker-image.yml
+    image: ghcr.io/vidaniello/dockge:latest
     restart: unless-stopped
     ports:
       # Host Port : Container Port
