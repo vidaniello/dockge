@@ -247,6 +247,9 @@
                     <!-- ENV editor (read-only when not in edit mode) -->
                     <ExpandableBox v-if="isEditMode || stack.composeENV" title=".env" class="mb-3">
                         <template #actions="{ expanded }">
+                            <button v-if="!isEditMode" class="btn btn-sm btn-normal" :title="envRevealed ? $t('hideValues') : $t('showValues')" @click="envRevealed = !envRevealed">
+                                <font-awesome-icon :icon="envRevealed ? 'eye-slash' : 'eye'" />
+                            </button>
                             <template v-if="expanded && isEditMode">
                                 <button class="btn btn-sm btn-primary" :disabled="processing" @click="deployStack">
                                     <font-awesome-icon icon="rocket" class="me-1" />
@@ -259,7 +262,12 @@
                             </template>
                         </template>
                         <template #default="{ expanded }">
-                            <div class="shadow-box editor-box" :class="{'edit-mode' : isEditMode, 'fill': expanded}">
+                            <div class="shadow-box editor-box env-box" :class="{'edit-mode' : isEditMode, 'fill': expanded, 'concealed': envConcealed}">
+                                <!-- .env usually contains passwords: blurred until the user asks to see it -->
+                                <button v-if="envConcealed" type="button" class="btn btn-normal reveal-button" @click="envRevealed = true">
+                                    <font-awesome-icon icon="eye" class="me-1" />
+                                    {{ $t("showValues") }}
+                                </button>
                                 <code-mirror
                                     ref="editorEnv"
                                     v-model="stack.composeENV"
@@ -457,6 +465,8 @@ export default {
             logService: "",
             showRenameDialog: false,
             showFolderDialog: false,
+            // The .env is blurred until revealed (it usually contains passwords)
+            envRevealed: false,
             folderInput: "",
             renameNewName: "",
             renameVolumes: [],
@@ -522,6 +532,10 @@ export default {
 
         status() {
             return this.globalStack?.status;
+        },
+
+        envConcealed() {
+            return !this.isEditMode && !this.envRevealed;
         },
 
         /** Result of the last image update check of this stack */
@@ -1159,6 +1173,30 @@ export default {
         :deep(.cm-scroller) {
             overflow: auto;
         }
+    }
+}
+
+.env-box {
+    position: relative;
+
+    &.concealed :deep(.vue-codemirror) {
+        filter: blur(6px);
+        user-select: none;
+        pointer-events: none;
+    }
+
+    .reveal-button {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 2;
+        white-space: nowrap;
+    }
+
+    // Leave room for the button when the .env has only a line or two
+    &.concealed {
+        min-height: 80px;
     }
 }
 

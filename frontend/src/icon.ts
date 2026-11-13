@@ -66,6 +66,7 @@ import {
     faFolderOpen,
     faPenToSquare,
     faBoxArchive,
+    faFolderPlus,
 } from "@fortawesome/free-solid-svg-icons";
 
 library.add(
@@ -133,6 +134,7 @@ library.add(
     faFolderOpen,
     faPenToSquare,
     faBoxArchive,
+    faFolderPlus,
 );
 
 export { FontAwesomeIcon };

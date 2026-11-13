@@ -35,6 +35,8 @@ export default defineComponent({
 
             // All stack list from all agents
             allAgentStackList: {} as Record<string, object>,
+            // Virtual folders of the sidebar (also the empty ones) of this instance
+            stackFolders: [] as string[],
 
             // online / offline / connecting
             agentStatusList: {
@@ -67,6 +69,20 @@ export default defineComponent({
                 }
             }
             return list;
+        },
+
+        /**
+         * Stored folders per endpoint ("current" for this instance)
+         * @returns {object} endpoint => folder paths
+         */
+        folderLists() : Record<string, string[]> {
+            const result : Record<string, string[]> = {
+                current: this.stackFolders,
+            };
+            for (const endpoint in this.allAgentStackList) {
+                result[endpoint] = (this.allAgentStackList[endpoint] as { folders? : string[] }).folders ?? [];
+            }
+            return result;
         },
 
         /** Number of stacks with newer images available (all endpoints) */
@@ -259,13 +275,16 @@ export default defineComponent({
                 if (res.ok) {
                     if (!res.endpoint) {
                         this.stackList = res.stackList;
+                        this.stackFolders = res.folders ?? [];
                     } else {
                         if (!this.allAgentStackList[res.endpoint]) {
                             this.allAgentStackList[res.endpoint] = {
                                 stackList: {},
+                                folders: [],
                             };
                         }
                         this.allAgentStackList[res.endpoint].stackList = res.stackList;
+                        this.allAgentStackList[res.endpoint].folders = res.folders ?? [];
                     }
                 }
             });

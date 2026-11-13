@@ -1,11 +1,11 @@
 <template>
     <router-link
+        ref="element"
         :to="url"
-        :class="{ 'dim' : !stack.isManagedByDockge }"
+        :class="{ 'dim' : !stack.isManagedByDockge, 'drag-source': isDragSource }"
         class="item"
         :style="depthMargin"
-        :draggable="stack.isManagedByDockge ? 'true' : 'false'"
-        @dragstart="onDragStart"
+        draggable="false"
     >
         <Uptime :stack="stack" :fixed-width="true" class="me-2" />
         <div class="title">
@@ -22,6 +22,8 @@
 </template>
 
 <script>
+import { computed, ref } from "vue";
+import { useDraggable } from "@dnd-kit/vue";
 import Uptime from "./Uptime.vue";
 
 export default {
@@ -59,6 +61,29 @@ export default {
             type: Function,
             default: () => {}
         },
+    },
+    /**
+     * Managed stacks can be dragged onto a folder of the sidebar (dnd-kit, see StackList.vue)
+     * @param {object} props Props
+     * @returns {object} Template refs and drag state
+     */
+    setup(props) {
+        const element = ref(null);
+        const { isDragSource } = useDraggable({
+            id: computed(() => `stack:${props.stack.endpoint || "current"}:${props.stack.name}`),
+            element,
+            disabled: computed(() => !props.stack.isManagedByDockge),
+            data: computed(() => ({
+                kind: "stack",
+                name: props.stack.name,
+                endpoint: props.stack.endpoint || "current",
+                folder: props.stack.folder || "",
+            })),
+        });
+        return {
+            element,
+            isDragSource,
+        };
     },
     data() {
         return {
@@ -98,23 +123,6 @@ export default {
 
     },
     methods: {
-        /**
-         * Drag a managed stack onto a folder of the sidebar to move it there
-         * @param {DragEvent} e Drag event
-         * @returns {void}
-         */
-        onDragStart(e) {
-            if (!this.stack.isManagedByDockge) {
-                e.preventDefault();
-                return;
-            }
-            e.dataTransfer.setData("application/x-dockge-stack", JSON.stringify({
-                name: this.stack.name,
-                endpoint: this.stack.endpoint || "",
-            }));
-            e.dataTransfer.effectAllowed = "move";
-        },
-
         /**
          * Changes the collapsed value of the current stack and saves
          * it to local storage
@@ -209,6 +217,18 @@ export default {
 
 .dim {
     opacity: 0.5;
+}
+
+// The stack being dragged (dnd-kit moves the element itself under the pointer)
+.drag-source {
+    cursor: grabbing;
+    background-color: $highlight-white;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    opacity: 0.9;
+
+    .dark & {
+        background-color: $dark-header-bg;
+    }
 }
 
 .update-icon {
