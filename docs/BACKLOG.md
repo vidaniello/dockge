@@ -42,3 +42,22 @@ Spesso i servizi hanno bisogno di file di configurazione. Ragionare su un gestor
 - **Comandi nella cartella dello stack**: Dockge ha già una "Console" (attiva con `DOCKGE_ENABLE_CONSOLE=true`). Non è SSH: è una shell bash dentro il container di Dockge, che parte dalla cartella degli stack e ha il client `docker`. L'input viene inviato una riga alla volta, quindi niente completamento con Tab né programmi a schermo intero (vim, nano). Valutare:
   - una console per singolo stack che parta già nella sua cartella;
   - una modalità interattiva completa, come quella del terminale dei container.
+
+## 5. Terminali: Console interattiva e miglioramenti del terminale dei servizi
+
+### Console generale in modalità interattiva
+
+Oggi la Console (`DOCKGE_ENABLE_CONSOLE=true`) è "a righe": il testo resta nel browser fino a Invio, poi la riga intera va a bash (`mode="mainTerminal"` in `frontend/src/components/Terminal.vue`, `MainTerminal` in `backend/terminal.ts`). Per questo non funzionano Tab, la cronologia con le frecce e i programmi che leggono un tasto alla volta (vim, nano, htop, less).
+
+- Usare la modalità interattiva già usata dal terminale dei container: ogni tasto va subito alla shell (`onData` + `terminalInput`).
+- La sicurezza non cambia: anche oggi è una bash completa con accesso al socket Docker. Resta attivabile solo con `DOCKGE_ENABLE_CONSOLE=true`.
+- La shell gira dentro il container di Dockge: vede solo le cartelle montate e ha pochi programmi. Valutare se aggiungere all'immagine un editor (nano) e strumenti di base.
+- Collegato al punto 4: una console per singolo stack che parta già nella sua cartella.
+
+### Terminale dei servizi (pulsante "Bash")
+
+È già interattivo. Possibili miglioramenti:
+
+- **Shell automatica**: provare `bash` e, se non c'è (immagini Alpine / busybox), usare `sh` senza dover premere "Switch to sh".
+- **Utente**: scegliere con quale utente entrare (es. `root`), utile quando l'immagine gira con un utente senza permessi (`docker compose exec --user`).
+- **Più sessioni**: aprire più terminali sullo stesso servizio, in schede. Oggi il nome del terminale usa sempre l'indice 0 (`getContainerExecTerminalName(..., 0)`).
