@@ -63,11 +63,47 @@
                     <span v-if="agent.endpoint === 'current'">{{ $t("currentEndpoint") }}</span>
                     <span v-else>{{ agent.endpoint }}</span>
                 </div>
-                <StackListItem
-                    v-for="(item, index) in agent.stacks"
-                    v-show="$root.agentCount === 1 || !closedAgents.get(agent.endpoint)" :key="index" :stack="item" :isSelectMode="selectMode"
-                    :isSelected="isSelected" :select="select" :deselect="deselect"
-                />
+                <div v-show="$root.agentCount === 1 || !closedAgents.get(agent.endpoint)">
+                    <!-- Stacks managed by Dockge -->
+                    <StackListItem
+                        v-for="item in agent.managed"
+                        :key="item.name" :stack="item" :isSelectMode="selectMode"
+                        :isSelected="isSelected" :select="select" :deselect="deselect"
+                    />
+
+                    <!-- Stacks not managed by Dockge (e.g. started from another folder or by another tool) -->
+                    <div v-if="agent.unmanaged.length > 0 || agent.truenasApps.length > 0" class="stack-group">
+                        <div class="group-header" @click="toggleGroup(agent.endpoint, 'unmanaged')">
+                            <font-awesome-icon class="me-2 chevron" :class="{ open: isGroupOpen(agent.endpoint, 'unmanaged') }" icon="chevron-right" />
+                            <font-awesome-icon class="me-2" icon="box-archive" />
+                            <span class="group-name">{{ $t("unmanagedStacks") }}</span>
+                            <span class="badge rounded-pill group-count">{{ agent.unmanaged.length + agent.truenasApps.length }}</span>
+                        </div>
+                        <div v-show="isGroupOpen(agent.endpoint, 'unmanaged')">
+                            <StackListItem
+                                v-for="item in agent.unmanaged"
+                                :key="item.name" :stack="item" :depth="1" :isSelectMode="selectMode"
+                                :isSelected="isSelected" :select="select" :deselect="deselect"
+                            />
+
+                            <!-- TrueNAS SCALE apps are compose projects named "ix-<app>" -->
+                            <div v-if="agent.truenasApps.length > 0" class="stack-group">
+                                <div class="group-header sub" @click="toggleGroup(agent.endpoint, 'truenas')">
+                                    <font-awesome-icon class="me-2 chevron" :class="{ open: isGroupOpen(agent.endpoint, 'truenas') }" icon="chevron-right" />
+                                    <span class="group-name">{{ $t("truenasApps") }}</span>
+                                    <span class="badge rounded-pill group-count">{{ agent.truenasApps.length }}</span>
+                                </div>
+                                <div v-show="isGroupOpen(agent.endpoint, 'truenas')">
+                                    <StackListItem
+                                        v-for="item in agent.truenasApps"
+                                        :key="item.name" :stack="item" :depth="2" :isSelectMode="selectMode"
+                                        :isSelected="isSelected" :select="select" :deselect="deselect"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -81,6 +117,32 @@
 import Confirm from "../components/Confirm.vue";
 import StackListItem from "../components/StackListItem.vue";
 import { CREATED_FILE, CREATED_STACK, EXITED, RUNNING, UNKNOWN } from "../../../common/util-common";
+
+const OPEN_GROUPS_KEY = "dockge.sidebar.openGroups";
+
+/**
+ * TrueNAS SCALE (24.10+) runs its apps as docker compose projects named "ix-<app name>"
+ * @param {object} stack Stack
+ * @returns {boolean} true if the stack is a TrueNAS app
+ */
+function isTrueNASApp(stack) {
+    return stack.name.startsWith("ix-");
+}
+
+/**
+ * @returns {object} Open/closed state of the groups in the stack list
+ */
+function loadOpenGroups() {
+    try {
+        const value = JSON.parse(window.localStorage.getItem(OPEN_GROUPS_KEY));
+        if (value && typeof value === "object") {
+            return value;
+        }
+    } catch (e) {
+        // ignore
+    }
+    return {};
+}
 
 export default {
     components: {
@@ -107,6 +169,7 @@ export default {
                 tags: null,
             },
             closedAgents: new Map(),
+            openGroups: loadOpenGroups(),
         };
     },
     computed: {
@@ -214,7 +277,10 @@ export default {
                 }, new Map()).entries()
             ].map(([ endpoint, stacks ]) => ({
                 endpoint,
-                stacks
+                stacks,
+                managed: stacks.filter(stack => stack.isManagedByDockge),
+                unmanaged: stacks.filter(stack => !stack.isManagedByDockge && !isTrueNASApp(stack)),
+                truenasApps: stacks.filter(stack => !stack.isManagedByDockge && isTrueNASApp(stack)),
             })).sort((a, b) => {
                 if (a.endpoint === "current" && b.endpoint !== "current") {
                     return -1;
@@ -295,6 +361,32 @@ export default {
         window.removeEventListener("scroll", this.onScroll);
     },
     methods: {
+        /**
+         * Is a group of the stack list expanded? Groups are always expanded while searching.
+         * @param {string} endpoint Endpoint
+         * @param {string} group Group name
+         * @returns {boolean} true if expanded
+         */
+        isGroupOpen(endpoint, group) {
+            return this.searchText !== "" || !!this.openGroups[endpoint + "|" + group];
+        },
+
+        /**
+         * Expand / collapse a group and remember it
+         * @param {string} endpoint Endpoint
+         * @param {string} group Group name
+         * @returns {void}
+         */
+        toggleGroup(endpoint, group) {
+            const key = endpoint + "|" + group;
+            this.openGroups[key] = !this.openGroups[key];
+            try {
+                window.localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify(this.openGroups));
+            } catch (e) {
+                // ignore
+            }
+        },
+
         /**
          * Handle user scroll
          * @returns {void}
@@ -479,6 +571,54 @@ export default {
     display: flex;
     align-items: center;
     gap: 10px;
+}
+
+.group-header {
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: $dark-font-color3;
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    user-select: none;
+    border-radius: 10px;
+
+    &:hover {
+        background-color: $highlight-white;
+
+        .dark & {
+            background-color: $dark-header-bg;
+        }
+    }
+
+    &.sub {
+        padding-left: 24px;
+    }
+
+    .chevron {
+        transition: transform 0.15s ease-in-out;
+        width: 10px;
+
+        &.open {
+            transform: rotate(90deg);
+        }
+    }
+
+    .group-name {
+        flex: 1;
+    }
+
+    .group-count {
+        background-color: rgba(128, 128, 128, 0.25);
+        color: inherit;
+        font-weight: 600;
+        font-size: 11px;
+
+        .dark & {
+            color: $dark-font-color;
+        }
+    }
 }
 
 .agent-select {

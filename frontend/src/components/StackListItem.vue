@@ -1,5 +1,5 @@
 <template>
-    <router-link :to="url" :class="{ 'dim' : !stack.isManagedByDockge }" class="item">
+    <router-link :to="url" :class="{ 'dim' : !stack.isManagedByDockge }" class="item" :style="depthMargin">
         <Uptime :stack="stack" :fixed-width="true" class="me-2" />
         <div class="title">
             <span>{{ stackName }}</span>
@@ -63,8 +63,11 @@ export default {
             }
         },
         depthMargin() {
+            if (!this.depth) {
+                return {};
+            }
             return {
-                marginLeft: `${31 * this.depth}px`,
+                paddingLeft: `${8 + 16 * this.depth}px`,
             };
         },
         stackName() {
