@@ -165,6 +165,58 @@ export class TerminalSocketHandler extends AgentSocketHandler {
             }
         });
 
+        // Join the log terminal of a stack (serviceName = "") or of a single service
+        agentSocket.on("joinLogTerminal", async (stackName : unknown, serviceName : unknown, callback) => {
+            try {
+                checkLogin(socket);
+
+                if (typeof(stackName) !== "string") {
+                    throw new ValidationError("Stack name must be a string.");
+                }
+
+                if (typeof(serviceName) !== "string") {
+                    throw new ValidationError("Service name must be a string.");
+                }
+
+                const stack = await Stack.getStack(server, stackName);
+
+                if (!stack.isManagedByDockge) {
+                    throw new ValidationError("Stack is not managed by Dockge.");
+                }
+
+                await stack.joinLogTerminal(socket, serviceName);
+
+                callbackResult({
+                    ok: true,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("leaveLogTerminal", async (stackName : unknown, serviceName : unknown, callback) => {
+            try {
+                checkLogin(socket);
+
+                if (typeof(stackName) !== "string") {
+                    throw new ValidationError("Stack name must be a string.");
+                }
+
+                if (typeof(serviceName) !== "string") {
+                    throw new ValidationError("Service name must be a string.");
+                }
+
+                const stack = await Stack.getStack(server, stackName);
+                await stack.leaveLogTerminal(socket, serviceName);
+
+                callbackResult({
+                    ok: true,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
         // Resize Terminal
         agentSocket.on("terminalResize", async (terminalName: unknown, rows: unknown, cols: unknown) => {
             log.info("terminalResize", `Terminal: ${terminalName}`);

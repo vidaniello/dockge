@@ -12,6 +12,7 @@ import {
     CREATED_STACK,
     EXITED, getCombinedTerminalName,
     getComposeTerminalName, getContainerExecTerminalName,
+    getServiceLogTerminalName, isValidServiceName,
     PROGRESS_TERMINAL_ROWS,
     RUNNING, TERMINAL_ROWS,
     UNKNOWN
@@ -479,10 +480,48 @@ export class Stack {
         const terminalName = getCombinedTerminalName(socket.endpoint, this.name);
         const terminal = Terminal.getOrCreateTerminal(this.server, terminalName, "docker", this.getComposeOptions("logs", "-f", "--tail", "100"), this.path);
         terminal.enableKeepAlive = true;
+        terminal.bufferLimit = 1000;
         terminal.rows = COMBINED_TERMINAL_ROWS;
         terminal.cols = COMBINED_TERMINAL_COLS;
         terminal.join(socket);
         terminal.start();
+    }
+
+    /**
+     * Follow the logs of the whole stack (serviceName = "") or of a single service
+     * @param socket Socket
+     * @param serviceName Service name, empty for all services
+     */
+    async joinLogTerminal(socket: DockgeSocket, serviceName: string = "") {
+        if (!serviceName) {
+            return this.joinCombinedTerminal(socket);
+        }
+
+        if (!isValidServiceName(serviceName)) {
+            throw new ValidationError("Invalid service name");
+        }
+
+        const terminalName = getServiceLogTerminalName(socket.endpoint, this.name, serviceName);
+        const terminal = Terminal.getOrCreateTerminal(this.server, terminalName, "docker", this.getComposeOptions("logs", "-f", "--tail", "500", "--no-log-prefix", serviceName), this.path);
+        terminal.enableKeepAlive = true;
+        terminal.bufferLimit = 1000;
+        terminal.join(socket);
+        terminal.start();
+    }
+
+    async leaveLogTerminal(socket: DockgeSocket, serviceName: string = "") {
+        if (!serviceName) {
+            return this.leaveCombinedTerminal(socket);
+        }
+
+        if (!isValidServiceName(serviceName)) {
+            throw new ValidationError("Invalid service name");
+        }
+
+        const terminal = Terminal.getTerminal(getServiceLogTerminalName(socket.endpoint, this.name, serviceName));
+        if (terminal) {
+            terminal.leave(socket);
+        }
     }
 
     async leaveCombinedTerminal(socket: DockgeSocket) {

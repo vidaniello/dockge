@@ -152,60 +152,111 @@
                         </div>
                     </div>
 
-                    <!-- Combined Terminal Output -->
+                    <!-- Logs: all services (combined) or a single service -->
                     <div v-show="!isEditMode">
-                        <h4 class="mb-3">{{ $t("terminal") }}</h4>
-                        <Terminal
-                            ref="combinedTerminal"
-                            class="mb-3 terminal"
-                            :name="combinedTerminalName"
-                            :endpoint="endpoint"
-                            :rows="combinedTerminalRows"
-                            :cols="combinedTerminalCols"
-                            style="height: 315px;"
-                        ></Terminal>
+                        <ExpandableBox :title="$t('terminal')" resizable storage-key="stackLogs" :height="315" :min-height="150" class="mb-3">
+                            <template #actions>
+                                <div v-if="serviceNames.length > 1" class="log-tabs" role="group">
+                                    <button
+                                        type="button"
+                                        class="btn btn-sm"
+                                        :class="logService === '' ? 'btn-primary' : 'btn-normal'"
+                                        @click="selectLogService('')"
+                                    >
+                                        {{ $t("allServices") }}
+                                    </button>
+                                    <button
+                                        v-for="serviceName in serviceNames"
+                                        :key="serviceName"
+                                        type="button"
+                                        class="btn btn-sm"
+                                        :class="logService === serviceName ? 'btn-primary' : 'btn-normal'"
+                                        @click="selectLogService(serviceName)"
+                                    >
+                                        {{ serviceName }}
+                                    </button>
+                                </div>
+                            </template>
+                            <Terminal
+                                :key="logTerminalName"
+                                class="terminal"
+                                :name="logTerminalName"
+                                :endpoint="endpoint"
+                                :rows="combinedTerminalRows"
+                                :cols="combinedTerminalCols"
+                            ></Terminal>
+                        </ExpandableBox>
                     </div>
                 </div>
                 <div class="col-lg-6">
-                    <h4 class="mb-3">{{ stack.composeFileName }}</h4>
-
                     <!-- YAML editor -->
-                    <div class="shadow-box mb-3 editor-box" :class="{'edit-mode' : isEditMode}">
-                        <code-mirror
-                            ref="editor"
-                            v-model="stack.composeYAML"
-                            :extensions="extensions"
-                            minimal
-                            wrap="true"
-                            dark="true"
-                            tab="true"
-                            :disabled="!isEditMode"
-                            :hasFocus="editorFocus"
-                            @change="yamlCodeChange"
-                        />
-                    </div>
-                    <div v-if="isEditMode" class="mb-3">
-                        {{ yamlError }}
-                    </div>
+                    <ExpandableBox :title="stack.composeFileName" class="mb-3">
+                        <template #actions="{ expanded }">
+                            <template v-if="expanded && isEditMode">
+                                <button class="btn btn-sm btn-primary" :disabled="processing" @click="deployStack">
+                                    <font-awesome-icon icon="rocket" class="me-1" />
+                                    {{ $t("deployStack") }}
+                                </button>
+                                <button class="btn btn-sm btn-normal" :disabled="processing" @click="saveStack">
+                                    <font-awesome-icon icon="save" class="me-1" />
+                                    {{ $t("saveStackDraft") }}
+                                </button>
+                            </template>
+                        </template>
+                        <template #default="{ expanded }">
+                            <div class="shadow-box editor-box" :class="{'edit-mode' : isEditMode, 'fill': expanded}">
+                                <code-mirror
+                                    ref="editor"
+                                    v-model="stack.composeYAML"
+                                    :extensions="extensions"
+                                    minimal
+                                    wrap="true"
+                                    dark="true"
+                                    tab="true"
+                                    :disabled="!isEditMode"
+                                    :hasFocus="editorFocus"
+                                    @change="yamlCodeChange"
+                                />
+                            </div>
+                        </template>
+                        <template #footer>
+                            <div v-if="isEditMode && yamlError" class="mt-2 yaml-error">
+                                {{ yamlError }}
+                            </div>
+                        </template>
+                    </ExpandableBox>
 
-                    <!-- ENV editor -->
-                    <div v-if="isEditMode">
-                        <h4 class="mb-3">.env</h4>
-                        <div class="shadow-box mb-3 editor-box" :class="{'edit-mode' : isEditMode}">
-                            <code-mirror
-                                ref="editor"
-                                v-model="stack.composeENV"
-                                :extensions="extensionsEnv"
-                                minimal
-                                wrap="true"
-                                dark="true"
-                                tab="true"
-                                :disabled="!isEditMode"
-                                :hasFocus="editorFocus"
-                                @change="yamlCodeChange"
-                            />
-                        </div>
-                    </div>
+                    <!-- ENV editor (read-only when not in edit mode) -->
+                    <ExpandableBox v-if="isEditMode || stack.composeENV" title=".env" class="mb-3">
+                        <template #actions="{ expanded }">
+                            <template v-if="expanded && isEditMode">
+                                <button class="btn btn-sm btn-primary" :disabled="processing" @click="deployStack">
+                                    <font-awesome-icon icon="rocket" class="me-1" />
+                                    {{ $t("deployStack") }}
+                                </button>
+                                <button class="btn btn-sm btn-normal" :disabled="processing" @click="saveStack">
+                                    <font-awesome-icon icon="save" class="me-1" />
+                                    {{ $t("saveStackDraft") }}
+                                </button>
+                            </template>
+                        </template>
+                        <template #default="{ expanded }">
+                            <div class="shadow-box editor-box" :class="{'edit-mode' : isEditMode, 'fill': expanded}">
+                                <code-mirror
+                                    ref="editorEnv"
+                                    v-model="stack.composeENV"
+                                    :extensions="extensionsEnv"
+                                    minimal
+                                    wrap="true"
+                                    dark="true"
+                                    tab="true"
+                                    :disabled="!isEditMode"
+                                    :hasFocus="editorFocus"
+                                    @change="yamlCodeChange"
+                                />
+                            </div>
+                        </template>
+                    </ExpandableBox>
 
                     <div v-if="isEditMode">
                         <!-- Volumes -->
@@ -260,11 +311,13 @@ import {
     copyYAMLComments, envsubstYAML,
     getCombinedTerminalName,
     getComposeTerminalName,
+    getServiceLogTerminalName,
     PROGRESS_TERMINAL_ROWS,
     RUNNING
 } from "../../../common/util-common";
 import { BModal } from "bootstrap-vue-next";
 import NetworkInput from "../components/NetworkInput.vue";
+import ExpandableBox from "../components/ExpandableBox.vue";
 import dotenv from "dotenv";
 import { ref } from "vue";
 
@@ -286,6 +339,7 @@ let dockerStatsTimeout = null;
 export default {
     components: {
         NetworkInput,
+        ExpandableBox,
         FontAwesomeIcon,
         CodeMirror,
         BModal,
@@ -344,6 +398,8 @@ export default {
             newContainerName: "",
             stopServiceStatusTimeout: false,
             stopDockerStatsTimeout: false,
+            // Service whose logs are shown in the terminal, "" = all services
+            logService: "",
         };
     },
     computed: {
@@ -410,6 +466,23 @@ export default {
                 return "";
             }
             return getCombinedTerminalName(this.endpoint, this.stack.name);
+        },
+
+        logTerminalName() {
+            if (!this.stack.name) {
+                return "";
+            }
+            if (this.logService === "") {
+                return this.combinedTerminalName;
+            }
+            return getServiceLogTerminalName(this.endpoint, this.stack.name, this.logService);
+        },
+
+        serviceNames() {
+            if (!this.jsonConfig.services || typeof this.jsonConfig.services !== "object") {
+                return [];
+            }
+            return Object.keys(this.jsonConfig.services);
         },
 
         networks() {
@@ -581,6 +654,34 @@ export default {
             // Leave Combined Terminal
             console.debug("leaveCombinedTerminal", this.endpoint, this.stack.name);
             this.$root.emitAgent(this.endpoint, "leaveCombinedTerminal", this.stack.name, () => {});
+
+            // Leave the log terminal of a single service
+            if (this.logService) {
+                this.$root.emitAgent(this.endpoint, "leaveLogTerminal", this.stack.name, this.logService, () => {});
+            }
+        },
+
+        /**
+         * Show the logs of all services ("") or of a single service
+         * @param {string} serviceName Service name
+         * @returns {void}
+         */
+        selectLogService(serviceName) {
+            if (serviceName === this.logService || !this.stack.name) {
+                return;
+            }
+
+            this.$root.emitAgent(this.endpoint, "leaveLogTerminal", this.stack.name, this.logService, () => {});
+            this.logService = serviceName;
+
+            // Wait for the new <Terminal> to be mounted and bound, so it receives the output from the very beginning
+            this.$nextTick(() => {
+                this.$root.emitAgent(this.endpoint, "joinLogTerminal", this.stack.name, serviceName, (res) => {
+                    if (!res.ok) {
+                        this.$root.toastRes(res);
+                    }
+                });
+            });
         },
 
         bindTerminal() {
@@ -856,6 +957,42 @@ export default {
 .editor-box {
     font-family: 'JetBrains Mono', monospace;
     font-size: 14px;
+
+    // Fullscreen: the editor fills the whole box and scrolls internally
+    &.fill {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+
+        :deep(.vue-codemirror) {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        :deep(.cm-editor) {
+            flex: 1;
+            min-height: 0;
+        }
+
+        :deep(.cm-scroller) {
+            overflow: auto;
+        }
+    }
+}
+
+.yaml-error {
+    color: $danger;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+}
+
+.log-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
 }
 
 .agent-name {
