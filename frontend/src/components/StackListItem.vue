@@ -2,7 +2,7 @@
     <router-link
         ref="element"
         :to="url"
-        :class="{ 'dim' : !stack.isManagedByDockge, 'drag-source': isDragSource }"
+        :class="{ 'dim' : !stack.isManagedByDockge, 'drag-source': isDragSource, ...dropClass }"
         class="item"
         :style="depthMargin"
         draggable="false"
@@ -22,8 +22,8 @@
 </template>
 
 <script>
-import { computed, ref } from "vue";
-import { useDraggable } from "@dnd-kit/vue";
+import { computed, inject, ref } from "vue";
+import { useDraggable, useDroppable } from "@dnd-kit/vue";
 import Uptime from "./Uptime.vue";
 
 export default {
@@ -40,6 +40,11 @@ export default {
         isSelectMode: {
             type: Boolean,
             default: false,
+        },
+        /** Folder containing this stack, "" = top level */
+        parent: {
+            type: String,
+            default: "",
         },
         /** How many ancestors are above this stack */
         depth: {
@@ -69,6 +74,23 @@ export default {
      */
     setup(props) {
         const element = ref(null);
+        const dropHint = inject("sidebarDropHint", null);
+        const endpoint = computed(() => props.stack.endpoint || "current");
+        const droppableId = computed(() => `drop-stack:${endpoint.value}:${props.stack.name}`);
+
+        // Other items can be dropped before / after this stack (reorder)
+        const { isDropTarget } = useDroppable({
+            id: droppableId,
+            element,
+            disabled: computed(() => !props.stack.isManagedByDockge),
+            data: computed(() => ({
+                itemType: "stack",
+                key: "s:" + props.stack.name,
+                parent: props.parent,
+                endpoint: endpoint.value,
+            })),
+        });
+
         const { isDragSource } = useDraggable({
             id: computed(() => `stack:${props.stack.endpoint || "current"}:${props.stack.name}`),
             element,
@@ -80,9 +102,20 @@ export default {
                 folder: props.stack.folder || "",
             })),
         });
+        const dropClass = computed(() => {
+            if (!isDropTarget.value || !dropHint || dropHint.id !== droppableId.value) {
+                return {};
+            }
+            return {
+                "drop-before": dropHint.zone === "before",
+                "drop-after": dropHint.zone === "after",
+            };
+        });
+
         return {
             element,
             isDragSource,
+            dropClass,
         };
     },
     data() {
@@ -217,6 +250,30 @@ export default {
 
 .dim {
     opacity: 0.5;
+}
+
+// Insertion line before / after the stack
+.item {
+    position: relative;
+}
+
+.drop-before::before,
+.drop-after::after {
+    content: "";
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    height: 3px;
+    border-radius: 2px;
+    background-color: $primary;
+}
+
+.drop-before::before {
+    top: -2px;
+}
+
+.drop-after::after {
+    bottom: -2px;
 }
 
 // The stack being dragged (dnd-kit moves the element itself under the pointer)

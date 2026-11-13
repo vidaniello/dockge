@@ -5,7 +5,10 @@ import { Stack } from "../stack";
 import { AgentSocket } from "../../common/agent-socket";
 import { listDirectory } from "../file-browser";
 import { getHostIPs } from "../host-ips";
-import { addFolders, deleteFolder, renameStoredFolders, validateFolder } from "../stack-folders";
+import {
+    addFolders, deleteFolder, deleteFolderOrder, removeFromOrder, renameFolderInOrder, renameStackInOrder,
+    renameStoredFolders, setChildrenOrder, validateFolder
+} from "../stack-folders";
 import { imageUpdateChecker } from "../image-update-checker";
 import { log } from "../log";
 
@@ -276,6 +279,9 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 await stack.setFolder(folder);
                 // Both folders stay in the sidebar even if they become empty
                 await addFolders(oldFolder, validateFolder(folder));
+                if (oldFolder !== validateFolder(folder)) {
+                    await removeFromOrder(oldFolder, "s:" + stack.name);
+                }
                 server.sendStackList();
 
                 callbackResult({
@@ -321,11 +327,61 @@ export class DockerSocketHandler extends AgentSocketHandler {
                     }
                 }
                 await renameStoredFolders(from, to);
+                await renameFolderInOrder(from, to);
 
                 server.sendStackList();
                 callbackResult({
                     ok: true,
                     count,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Drag & drop in the sidebar: move a stack / folder into "toParent" and set the order of its children
+        agentSocket.on("moveSidebarItem", async (item : unknown, toParent : unknown, order : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (!item || typeof(item) !== "object" || typeof(toParent) !== "string" || !Array.isArray(order)) {
+                    throw new ValidationError("Invalid parameters");
+                }
+                const { kind, name, path } = item as { kind? : unknown, name? : unknown, path? : unknown };
+                const parent = validateFolder(toParent);
+
+                if (kind === "stack" && typeof(name) === "string") {
+                    const stack = await Stack.getStack(server, name);
+                    const oldFolder = stack.folder;
+                    if (oldFolder !== parent) {
+                        await stack.setFolder(parent);
+                        await addFolders(oldFolder, parent);
+                        await removeFromOrder(oldFolder, "s:" + stack.name);
+                    }
+                } else if (kind === "folder" && typeof(path) === "string") {
+                    const from = validateFolder(path);
+                    const to = parent ? parent + "/" + from.split("/").pop() : (from.split("/").pop() ?? "");
+                    if (!from || parent === from || parent.startsWith(from + "/")) {
+                        throw new ValidationError("A folder cannot be moved inside itself");
+                    }
+                    if (to !== from) {
+                        const stackList = await Stack.getStackList(server);
+                        for (const stack of stackList.values()) {
+                            const folder = stack.isManagedByDockge ? stack.folder : "";
+                            if (folder && (folder === from || folder.startsWith(from + "/"))) {
+                                await stack.setFolder(to + folder.slice(from.length));
+                            }
+                        }
+                        await renameStoredFolders(from, to);
+                        await renameFolderInOrder(from, to);
+                    }
+                } else {
+                    throw new ValidationError("Invalid item");
+                }
+
+                await setChildrenOrder(parent, order as string[]);
+                server.sendStackList();
+                callbackResult({
+                    ok: true,
                 }, callback);
             } catch (e) {
                 callbackError(e, callback);
@@ -363,6 +419,7 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 }
                 const stackList = await Stack.getStackList(server);
                 await deleteFolder(Stack.normalizeFolder(folder), [ ...stackList.values() ]);
+                await deleteFolderOrder(Stack.normalizeFolder(folder));
                 server.sendStackList();
                 callbackResult({
                     ok: true,
@@ -382,8 +439,10 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 }
 
                 const stack = await Stack.getStack(server, stackName);
+                const folder = stack.folder;
                 try {
                     await stack.rename(socket, newName, keepVolumes === true);
+                    await renameStackInOrder(folder, stackName, newName);
                 } finally {
                     server.sendStackList();
                 }

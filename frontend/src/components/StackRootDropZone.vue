@@ -25,8 +25,9 @@ export default {
             id: computed(() => `drop-root:${props.endpoint}`),
             element,
             data: computed(() => ({
-                kind: "folder",
+                itemType: "root",
                 path: "",
+                parent: "",
                 endpoint: props.endpoint,
             })),
         });

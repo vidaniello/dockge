@@ -1151,6 +1151,16 @@ export default {
 .editor-box {
     font-family: 'JetBrains Mono', monospace;
     font-size: 14px;
+    transition: background-color 0.2s, box-shadow 0.2s;
+
+    // Edit mode must be obvious in the dark theme too (same color as the global .env editor)
+    &.edit-mode {
+        box-shadow: inset 0 0 0 1px rgba($primary, 0.45);
+
+        .dark & {
+            background-color: #2c2f38 !important;
+        }
+    }
 
     // Fullscreen: the editor fills the whole box and scrolls internally
     &.fill {

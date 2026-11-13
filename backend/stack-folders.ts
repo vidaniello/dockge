@@ -69,3 +69,115 @@ export async function deleteFolder(folder : string, stacks : Stack[]) {
     const current = await getStoredFolders();
     await save(current.filter((item) => !isInside(item, folder)));
 }
+
+/*
+ * Manual order of the sidebar.
+ * For each folder ("" = top level) the ordered keys of its children: "f:<folder name>" or "s:<stack name>".
+ * Children missing from the list keep the default order (folders by name, then stacks) after the listed ones.
+ */
+
+const ORDER_SETTING_KEY = "stackFolderOrder";
+
+export type SidebarOrder = Record<string, string[]>;
+
+export async function getSidebarOrder() : Promise<SidebarOrder> {
+    const value = await Settings.get(ORDER_SETTING_KEY);
+    return value && typeof(value) === "object" && !Array.isArray(value) ? value as SidebarOrder : {};
+}
+
+async function saveOrder(order : SidebarOrder) {
+    // Drop empty lists
+    for (const key of Object.keys(order)) {
+        if (!Array.isArray(order[key]) || order[key].length === 0) {
+            delete order[key];
+        }
+    }
+    await Settings.set(ORDER_SETTING_KEY, order, "stackFolders");
+}
+
+function parentOf(folder : string) : string {
+    const index = folder.lastIndexOf("/");
+    return index === -1 ? "" : folder.slice(0, index);
+}
+
+function baseName(folder : string) : string {
+    return folder.slice(folder.lastIndexOf("/") + 1);
+}
+
+/**
+ * Set the order of the children of a folder
+ * @param parent Folder ("" = top level)
+ * @param keys Ordered keys ("f:name" / "s:name")
+ */
+export async function setChildrenOrder(parent : string, keys : string[]) {
+    const order = await getSidebarOrder();
+    const valid = keys.filter((key) => typeof(key) === "string" && /^[fs]:.+$/.test(key) && key.length <= 300);
+    order[Stack.normalizeFolder(parent)] = [ ...new Set(valid) ];
+    await saveOrder(order);
+}
+
+/**
+ * Remove a child from the order of its folder (after a move to another folder)
+ */
+export async function removeFromOrder(parent : string, key : string) {
+    const order = await getSidebarOrder();
+    const list = order[parent];
+    if (list && list.includes(key)) {
+        order[parent] = list.filter((item) => item !== key);
+        await saveOrder(order);
+    }
+}
+
+/**
+ * A folder was renamed / moved: move the order lists of the folder and of its sub folders,
+ * and rename its key in its parent
+ */
+export async function renameFolderInOrder(from : string, to : string) {
+    const order = await getSidebarOrder();
+    const result : SidebarOrder = {};
+    for (const [ parent, keys ] of Object.entries(order)) {
+        const newParent = isInside(parent, from) ? Stack.normalizeFolder(to + parent.slice(from.length)) : parent;
+        result[newParent] = [ ...(result[newParent] ?? []), ...keys ];
+    }
+
+    const fromParent = parentOf(from);
+    const toParent = parentOf(to);
+    const oldKey = "f:" + baseName(from);
+    const newKey = "f:" + baseName(to);
+    if (result[fromParent]) {
+        if (fromParent === toParent) {
+            result[fromParent] = result[fromParent].map((key) => key === oldKey ? newKey : key);
+        } else {
+            result[fromParent] = result[fromParent].filter((key) => key !== oldKey);
+        }
+    }
+    await saveOrder(result);
+}
+
+/**
+ * A stack was renamed: keep its position
+ */
+export async function renameStackInOrder(folder : string, oldName : string, newName : string) {
+    const order = await getSidebarOrder();
+    if (order[folder]) {
+        order[folder] = order[folder].map((key) => key === "s:" + oldName ? "s:" + newName : key);
+        await saveOrder(order);
+    }
+}
+
+/**
+ * A folder was deleted: forget its order and the order of its sub folders
+ */
+export async function deleteFolderOrder(folder : string) {
+    const order = await getSidebarOrder();
+    for (const parent of Object.keys(order)) {
+        if (isInside(parent, folder)) {
+            delete order[parent];
+        }
+    }
+    const parent = parentOf(folder);
+    if (order[parent]) {
+        order[parent] = order[parent].filter((key) => key !== "f:" + baseName(folder));
+    }
+    await saveOrder(order);
+}
