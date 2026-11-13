@@ -115,7 +115,7 @@ export class Terminal {
             this._ptyProcess = pty.spawn(this.file, this.args, {
                 name: this.name,
                 cwd: this.cwd,
-                cols: TERMINAL_COLS,
+                cols: this.cols,
                 rows: this.rows,
             });
 
@@ -191,6 +191,10 @@ export class Terminal {
     /**
      * Get the terminal output string
      */
+    set bufferLimit(limit : number) {
+        this.buffer.__limit = limit;
+    }
+
     getBuffer() : string {
         if (this.buffer.length === 0) {
             return "";

@@ -186,3 +186,48 @@ export function getToastErrorTimeout() {
     return errorTimeout;
 }
 
+/**
+ * Copy text to the clipboard.
+ * navigator.clipboard is only available in secure contexts (HTTPS or localhost), so when Dockge is
+ * opened over plain HTTP (very common on a NAS), fall back to a hidden textarea + execCommand("copy").
+ * Must be called from a user gesture (click, keydown, mouseup...) for the fallback to work.
+ * @param {string} text Text to copy
+ * @returns {Promise<boolean>} true if the text was copied
+ */
+export async function copyToClipboard(text : string) : Promise<boolean> {
+    if (!text) {
+        return false;
+    }
+
+    if (window.isSecureContext && navigator.clipboard) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (e) {
+            // Fall through to the legacy method
+        }
+    }
+
+    const activeElement = document.activeElement as HTMLElement | null;
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.top = "0";
+    textarea.style.left = "0";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    document.body.appendChild(textarea);
+    textarea.select();
+
+    let ok = false;
+    try {
+        ok = document.execCommand("copy");
+    } catch (e) {
+        ok = false;
+    }
+
+    document.body.removeChild(textarea);
+    activeElement?.focus?.();
+    return ok;
+}

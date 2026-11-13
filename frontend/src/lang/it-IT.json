@@ -112,5 +112,14 @@
     "removeAgentMsg": "Sei sicuro di voler rimuovere questo agente?",
     "addAgent": "Aggungi Agente",
     "agentAddedSuccessfully": "Agente aggiunto correttamente.",
-    "LongSyntaxNotSupported": "La sintassi lunga non è supportata qui. Utilizzare l'editor YAML."
+    "LongSyntaxNotSupported": "La sintassi lunga non è supportata qui. Utilizzare l'editor YAML.",
+    "fullscreen": "Schermo intero",
+    "exitFullscreen": "Esci da schermo intero (Esc)",
+    "dragToResize": "Trascina per ridimensionare, doppio clic per ripristinare",
+    "allServices": "Tutti",
+    "terminalCopyPasteHint": "Seleziona il testo per copiarlo · Ctrl+Shift+C copia · Ctrl+V / Ctrl+Shift+V incolla",
+    "unmanagedStacks": "Stack non gestiti",
+    "truenasApps": "App TrueNAS",
+    "collapseSidebar": "Riduci barra laterale",
+    "expandSidebar": "Espandi barra laterale"
 }

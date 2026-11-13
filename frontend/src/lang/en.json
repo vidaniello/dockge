@@ -148,5 +148,14 @@
     "rmCode": "rm",
     "rmRfCode": "rm -rf",
     "envVarCode": "DOCKGE_ENABLE_CONSOLE=true",
-    "confirmLeaveStack": "You are currently editing a stack. Are you sure you want to leave?"
+    "confirmLeaveStack": "You are currently editing a stack. Are you sure you want to leave?",
+    "fullscreen": "Fullscreen",
+    "exitFullscreen": "Exit fullscreen (Esc)",
+    "dragToResize": "Drag to resize, double-click to reset",
+    "allServices": "All",
+    "terminalCopyPasteHint": "Select text to copy · Ctrl+Shift+C copy · Ctrl+V / Ctrl+Shift+V paste",
+    "unmanagedStacks": "Unmanaged stacks",
+    "truenasApps": "TrueNAS apps",
+    "collapseSidebar": "Collapse sidebar",
+    "expandSidebar": "Expand sidebar"
 }
