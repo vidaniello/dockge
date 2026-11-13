@@ -24,3 +24,21 @@ Cose da valutare:
 - Altre sono scelte personali o più grandi (API REST/MCP, cartelle, controllo aggiornamenti, ordinamento manuale) e potrebbero non essere accettate o richiedere molte revisioni.
 - Mantenere una versione propria significa riportare a mano gli aggiornamenti dell'originale (merge periodici e conflitti) e pubblicare la propria immagine (già fatto con GHCR).
 - Possibile via di mezzo: proporre all'originale solo le correzioni, una pull request per ciascuna, e tenere qui le funzionalità più grandi.
+
+## 4. Gestione dei file dello stack
+
+Spesso i servizi hanno bisogno di file di configurazione. Ragionare su un gestore di file nella pagina dello stack:
+
+- **Navigazione e cartelle**: elenco di file e cartelle della cartella dello stack; creare, rinominare, spostare ed eliminare file e sottocartelle.
+- **Upload / download**: caricare file (anche più di uno, trascinandoli) e scaricarli; per le cartelle, download come archivio.
+- **Piccolo editor di testo**: aprire un file, modificarlo, salvarlo e poi, con un pulsante, riavviare il servizio che lo usa. Si può riusare l'editor CodeMirror già usato per compose.yaml, con evidenziazione in base all'estensione.
+- **A capo di Windows (CRLF)**: gli script `.sh` con `\r\n` non partono (`/bin/sh^M: bad interpreter`).
+  - L'editor lavora già internamente con `\n`, quindi il testo incollato da Windows viene normalizzato; controllare che al salvataggio venga scritto con `\n`.
+  - Per i file caricati: rilevare CRLF (e il BOM UTF-8) e proporre la conversione, almeno per `.sh`, `.env`, `.yaml`, `.conf`; mostrare nell'editor il tipo di a capo del file (LF / CRLF) e permettere di cambiarlo.
+  - Bit di esecuzione per gli script (`chmod +x`) e proprietario dei file (`PUID` / `PGID`, come per compose.yaml).
+- **Sicurezza**: restare dentro la cartella dello stack (percorsi risolti, niente `..` né link simbolici che escono), limite di dimensione, i file binari solo in download.
+- **File fuori dallo stack**: chi usa percorsi assoluti dell'host nei bind mount (es. `/mnt/pool/...`) ha i file di configurazione lì, non nella cartella dello stack. Valutare di permettere anche le cartelle di `DOCKGE_BROWSE_ROOTS`; oggi sono montate in sola lettura e andrebbero montate in scrittura.
+- **API / MCP**: esporre lettura e scrittura dei file (es. `list_files`, `read_file`, `write_file`), così un assistente AI può correggere una configurazione e riavviare il servizio.
+- **Comandi nella cartella dello stack**: Dockge ha già una "Console" (attiva con `DOCKGE_ENABLE_CONSOLE=true`). Non è SSH: è una shell bash dentro il container di Dockge, che parte dalla cartella degli stack e ha il client `docker`. L'input viene inviato una riga alla volta, quindi niente completamento con Tab né programmi a schermo intero (vim, nano). Valutare:
+  - una console per singolo stack che parta già nella sua cartella;
+  - una modalità interattiva completa, come quella del terminale dei container.
