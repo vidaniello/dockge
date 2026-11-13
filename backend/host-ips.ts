@@ -2,6 +2,7 @@ import fs from "fs";
 import os from "os";
 import childProcessAsync from "promisify-child-process";
 import { log } from "./log";
+import { apiName, dockerApiGet } from "./docker-api";
 
 /**
  * IP addresses of the host, for the "bind this port to IP" dropdown of the port fields.
@@ -58,11 +59,16 @@ function isInContainer() : boolean {
 
 async function detectFromHostNetwork() : Promise<HostIP[]> {
     // The container ID is the default hostname of a container
-    const inspect = await childProcessAsync.spawn("docker", [ "inspect", "--format", "{{.Image}}", os.hostname() ], {
-        encoding: "utf-8",
-        timeout: 10 * 1000,
-    });
-    const image = inspect.stdout?.toString().trim();
+    let image : string | undefined;
+    try {
+        image = (await dockerApiGet<{ Image? : string }>(`/containers/${apiName(os.hostname())}/json`)).Image;
+    } catch (e) {
+        const inspect = await childProcessAsync.spawn("docker", [ "inspect", "--format", "{{.Image}}", os.hostname() ], {
+            encoding: "utf-8",
+            timeout: 10 * 1000,
+        });
+        image = inspect.stdout?.toString().trim();
+    }
     if (!image) {
         throw new Error("Cannot find the image of the Dockge container");
     }
