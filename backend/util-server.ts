@@ -51,23 +51,56 @@ export class ValidationError extends Error {
     }
 }
 
+/**
+ * Readable message of an error. For a failed command (promisify-child-process), the message is only
+ * "Process exited with code 1": add the end of what the command wrote on stderr, which says why.
+ * @param error Error
+ */
+export function errorMessage(error : unknown) : string {
+    if (!(error instanceof Error)) {
+        return String(error);
+    }
+    let message = error.message;
+    const stderr = (error as Error & { stderr? : unknown }).stderr;
+    if (stderr) {
+        const text = stderr.toString().trim();
+        if (text) {
+            message += ": " + text.split("\n").slice(-3).join(" ").slice(0, 500);
+        }
+    }
+    return message;
+}
+
 export function callbackError(error : unknown, callback : unknown) {
     if (typeof(callback) !== "function") {
         log.error("console", "Callback is not a function");
         return;
     }
 
-    if (error instanceof Error) {
-        callback({
-            ok: false,
-            msg: error.message,
-            msgi18n: true,
-        });
-    } else if (error instanceof ValidationError) {
+    // ValidationError extends Error, so it must be checked first
+    if (error instanceof ValidationError) {
         callback({
             ok: false,
             type: ERROR_TYPE_VALIDATION,
             msg: error.message,
+            msgi18n: true,
+        });
+    } else if (error instanceof Error) {
+        const message = errorMessage(error);
+        if (message !== error.message) {
+            log.warn("console", message);
+        }
+        callback({
+            ok: false,
+            msg: message,
+            // Command output is not a translation key (and "{{ }}" would break vue-i18n)
+            msgi18n: message === error.message,
+        });
+    } else if (typeof(error) === "string") {
+        // e.g. Terminal.exec() rejects with a string when another operation is running
+        callback({
+            ok: false,
+            msg: error,
             msgi18n: true,
         });
     } else {
