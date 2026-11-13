@@ -36,6 +36,9 @@ export class Terminal {
 
     protected socketList : Record<string, DockgeSocket> = {};
 
+    /** Receives the raw output too (used by the API to return the output of an operation) */
+    public outputListener? : (data : string) => void;
+
     constructor(server : DockgeServer, name : string, file : string, args : string | string[], cwd : string) {
         this.server = server;
         this._name = name;
@@ -122,6 +125,7 @@ export class Terminal {
             // On Data
             this._ptyProcess.onData((data) => {
                 this.buffer.pushItem(data);
+                this.outputListener?.(data);
 
                 for (const socketID in this.socketList) {
                     const socket = this.socketList[socketID];
@@ -225,7 +229,7 @@ export class Terminal {
         return terminal;
     }
 
-    public static exec(server : DockgeServer, socket : DockgeSocket | undefined, terminalName : string, file : string, args : string | string[], cwd : string) : Promise<number> {
+    public static exec(server : DockgeServer, socket : DockgeSocket | undefined, terminalName : string, file : string, args : string | string[], cwd : string, outputListener? : (data : string) => void) : Promise<number> {
         return new Promise((resolve, reject) => {
             // check if terminal exists
             if (Terminal.terminalMap.has(terminalName)) {
@@ -239,6 +243,7 @@ export class Terminal {
             if (socket) {
                 terminal.join(socket);
             }
+            terminal.outputListener = outputListener;
 
             terminal.onExit((exitCode : number) => {
                 resolve(exitCode);

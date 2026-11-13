@@ -29,6 +29,7 @@ import { TerminalSocketHandler } from "./agent-socket-handlers/terminal-socket-h
 import { Stack } from "./stack";
 import { Cron } from "croner";
 import { imageUpdateChecker } from "./image-update-checker";
+import { createApiRouter } from "./api/api-router";
 import gracefulShutdown from "http-graceful-shutdown";
 import User from "./models/user";
 import childProcessAsync from "promisify-child-process";
@@ -80,6 +81,9 @@ export class DockgeServer {
     jwtSecret : string = "";
 
     stacksDir : string = "";
+
+    /** Separate listener of the API (DOCKGE_API_PORT) */
+    apiServer? : http.Server;
 
     /**
      *
@@ -174,6 +178,7 @@ export class DockgeServer {
 
         // Create express
         this.app = express();
+        this.applyTrustProxy(this.app);
 
         // Create HTTP server
         if (this.config.sslKey && this.config.sslCert) {
@@ -191,6 +196,18 @@ export class DockgeServer {
         // Binding Routers
         for (const router of this.routerList) {
             this.app.use(router.create(this.app, this));
+        }
+
+        // External API (REST + MCP). With DOCKGE_API_PORT it gets its own listener instead (see serve()).
+        if (!this.apiPort) {
+            this.app.use(createApiRouter(this));
+        } else {
+            this.app.all([ "/api/*", "/mcp" ], (_req, res) => {
+                res.status(404).json({
+                    ok: false,
+                    error: `The API is served on its own port (${this.apiPort})`,
+                });
+            });
         }
 
         // Static files
@@ -328,6 +345,78 @@ export class DockgeServer {
         }
     }
 
+    /** DOCKGE_API_PORT: serve the API on its own port (and DOCKGE_API_HOSTNAME: on one IP only) */
+    get apiPort() : number | undefined {
+        const port = Number(process.env.DOCKGE_API_PORT);
+        return port > 0 ? port : undefined;
+    }
+
+    get apiHostname() : string | undefined {
+        return process.env.DOCKGE_API_HOSTNAME || undefined;
+    }
+
+    /**
+     * Requests coming from these reverse proxies are trusted for X-Forwarded-Proto / X-Forwarded-For.
+     * DOCKGE_TRUST_PROXY: "true", a number of hops, or a comma separated list of IPs / subnets / loopback,linklocal,uniquelocal
+     * @param app Express app
+     */
+    applyTrustProxy(app : Express) {
+        const value = process.env.DOCKGE_TRUST_PROXY;
+        if (!value) {
+            return;
+        }
+        if (value === "true") {
+            app.set("trust proxy", true);
+        } else if (/^\d+$/.test(value)) {
+            app.set("trust proxy", Number(value));
+        } else {
+            app.set("trust proxy", value.split(",").map((item) => item.trim()).filter((item) => item));
+        }
+    }
+
+    /**
+     * Start the separate API listener (DOCKGE_API_PORT)
+     */
+    startApiServer() {
+        const port = this.apiPort;
+        if (!port) {
+            return;
+        }
+
+        const apiApp = express();
+        this.applyTrustProxy(apiApp);
+        apiApp.disable("x-powered-by");
+        apiApp.use(createApiRouter(this));
+        apiApp.use((_req, res) => {
+            res.status(404).json({
+                ok: false,
+                error: "Not found. The API is under /api/v1 and /mcp",
+            });
+        });
+
+        const sslKey = process.env.DOCKGE_API_SSL_KEY || this.config.sslKey;
+        const sslCert = process.env.DOCKGE_API_SSL_CERT || this.config.sslCert;
+        let apiServer : http.Server;
+        if (sslKey && sslCert) {
+            apiServer = https.createServer({
+                key: fs.readFileSync(sslKey),
+                cert: fs.readFileSync(sslCert),
+                passphrase: process.env.DOCKGE_API_SSL_KEY_PASSPHRASE || this.config.sslKeyPassphrase,
+            }, apiApp);
+        } else {
+            apiServer = http.createServer(apiApp);
+        }
+
+        apiServer.on("error", (e : Error) => {
+            log.error("server", `Cannot start the API listener on ${this.apiHostname ?? "all interfaces"}:${port}: ${e.message}`);
+        });
+        this.apiServer = apiServer;
+
+        apiServer.listen(port, this.apiHostname, () => {
+            log.info("server", `API listening on ${this.apiHostname ?? "all interfaces"}:${port} (${sslKey && sslCert ? "HTTPS" : "HTTP"})`);
+        });
+    }
+
     async afterLogin(socket : DockgeSocket, user : User) {
         socket.userID = user.id;
         socket.join(user.id.toString());
@@ -398,6 +487,9 @@ export class DockgeServer {
 
             // Periodic check of image updates (interval in the settings)
             imageUpdateChecker.init(this);
+
+            // Separate listener for the API, if configured
+            this.startApiServer();
 
             // Run every 10 seconds
             Cron("*/10 * * * * *", {
@@ -684,6 +776,9 @@ export class DockgeServer {
         log.info("server", "Called signal: " + signal);
 
         // TODO: Close all terminals?
+
+        this.apiServer?.close();
+        this.apiServer?.closeAllConnections?.();
 
         await Database.close();
         Settings.stopCacheCleaner();
