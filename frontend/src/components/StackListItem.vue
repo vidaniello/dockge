@@ -1,5 +1,12 @@
 <template>
-    <router-link :to="url" :class="{ 'dim' : !stack.isManagedByDockge }" class="item" :style="depthMargin">
+    <router-link
+        :to="url"
+        :class="{ 'dim' : !stack.isManagedByDockge }"
+        class="item"
+        :style="depthMargin"
+        :draggable="stack.isManagedByDockge ? 'true' : 'false'"
+        @dragstart="onDragStart"
+    >
         <Uptime :stack="stack" :fixed-width="true" class="me-2" />
         <div class="title">
             <span>{{ stackName }}</span>
@@ -84,6 +91,23 @@ export default {
 
     },
     methods: {
+        /**
+         * Drag a managed stack onto a folder of the sidebar to move it there
+         * @param {DragEvent} e Drag event
+         * @returns {void}
+         */
+        onDragStart(e) {
+            if (!this.stack.isManagedByDockge) {
+                e.preventDefault();
+                return;
+            }
+            e.dataTransfer.setData("application/x-dockge-stack", JSON.stringify({
+                name: this.stack.name,
+                endpoint: this.stack.endpoint || "",
+            }));
+            e.dataTransfer.effectAllowed = "move";
+        },
+
         /**
          * Changes the collapsed value of the current stack and saves
          * it to local storage

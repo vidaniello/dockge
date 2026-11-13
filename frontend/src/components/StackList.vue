@@ -47,7 +47,7 @@
                 </span>
             </div>
         </div>
-        <div ref="stackList" class="stack-list" :class="{ scrollbar: scrollbar }" :style="stackListStyle">
+        <div ref="stackList" class="stack-list" :class="{ scrollbar: scrollbar }" :style="stackListStyle" @dragstart="onDragStart" @dragend="dragging = false">
             <div v-if="agentStackList[0] && agentStackList[0].stacks.length === 0" class="text-center mt-3">
                 <router-link to="/compose">{{ $t("addFirstStackMsg") }}</router-link>
             </div>
@@ -64,12 +64,37 @@
                     <span v-else>{{ agent.endpoint }}</span>
                 </div>
                 <div v-show="$root.agentCount === 1 || !closedAgents.get(agent.endpoint)">
-                    <!-- Stacks managed by Dockge -->
+                    <!-- Virtual folders (x-dockge.folder) -->
+                    <StackFolder
+                        v-for="folder in agent.tree.folders"
+                        :key="folder.path"
+                        :node="folder"
+                        :endpoint="agent.endpoint"
+                        :is-open="(path) => isFolderOpen(agent.endpoint, path)"
+                        :item-props="itemProps"
+                        @toggle="toggleFolder(agent.endpoint, $event)"
+                        @move-stack="moveStack"
+                        @rename-folder="renameFolder(agent.endpoint, $event)"
+                    />
+
+                    <!-- Stacks managed by Dockge, not in a folder -->
                     <StackListItem
-                        v-for="item in agent.managed"
+                        v-for="item in agent.tree.stacks"
                         :key="item.name" :stack="item" :isSelectMode="selectMode"
                         :isSelected="isSelected" :select="select" :deselect="deselect"
                     />
+
+                    <!-- While dragging a stack (shown below the list, so nothing moves under the mouse): drop here to take it out of its folder -->
+                    <div
+                        v-if="dragging"
+                        class="root-drop-zone"
+                        :class="{ 'drop-target': rootDropActive === agent.endpoint }"
+                        @dragover="onRootDragOver($event, agent.endpoint)"
+                        @dragleave="rootDropActive = null"
+                        @drop="onRootDrop($event, agent.endpoint)"
+                    >
+                        {{ $t("noFolder") }}
+                    </div>
 
                     <!-- Stacks not managed by Dockge (e.g. started from another folder or by another tool) -->
                     <div v-if="agent.unmanaged.length > 0 || agent.truenasApps.length > 0" class="stack-group">
@@ -116,6 +141,7 @@
 <script>
 import Confirm from "../components/Confirm.vue";
 import StackListItem from "../components/StackListItem.vue";
+import StackFolder, { DRAG_TYPE } from "../components/StackFolder.vue";
 import { CREATED_FILE, CREATED_STACK, EXITED, RUNNING, UNKNOWN } from "../../../common/util-common";
 
 const OPEN_GROUPS_KEY = "dockge.sidebar.openGroups";
@@ -127,6 +153,54 @@ const OPEN_GROUPS_KEY = "dockge.sidebar.openGroups";
  */
 function isTrueNASApp(stack) {
     return stack.name.startsWith("ix-");
+}
+
+/**
+ * Build the tree of virtual folders. Folders are sorted by name, stacks keep the order of the list.
+ * @param {object[]} stacks Sorted stacks
+ * @returns {object} Root node { folders, stacks }
+ */
+function buildFolderTree(stacks) {
+    const root = {
+        name: "",
+        path: "",
+        folders: [],
+        stacks: [],
+        count: 0,
+        children: new Map(),
+    };
+
+    for (const stack of stacks) {
+        let node = root;
+        if (stack.folder) {
+            let currentPath = "";
+            for (const part of stack.folder.split("/")) {
+                currentPath = currentPath ? currentPath + "/" + part : part;
+                if (!node.children.has(part)) {
+                    const child = {
+                        name: part,
+                        path: currentPath,
+                        folders: [],
+                        stacks: [],
+                        count: 0,
+                        children: new Map(),
+                    };
+                    node.children.set(part, child);
+                    node.folders.push(child);
+                }
+                node = node.children.get(part);
+                node.count++;
+            }
+        }
+        node.stacks.push(stack);
+    }
+
+    const sortFolders = (node) => {
+        node.folders.sort((a, b) => a.name.localeCompare(b.name));
+        node.folders.forEach(sortFolders);
+    };
+    sortFolders(root);
+    return root;
 }
 
 /**
@@ -148,6 +222,7 @@ export default {
     components: {
         Confirm,
         StackListItem,
+        StackFolder,
     },
     props: {
         /** Should the scrollbar be shown */
@@ -170,9 +245,20 @@ export default {
             },
             closedAgents: new Map(),
             openGroups: loadOpenGroups(),
+            dragging: false,
+            rootDropActive: null,
         };
     },
     computed: {
+        itemProps() {
+            return {
+                isSelectMode: this.selectMode,
+                isSelected: this.isSelected,
+                select: this.select,
+                deselect: this.deselect,
+            };
+        },
+
         /**
          * Improve the sticky appearance of the list by increasing its
          * height as user scrolls down.
@@ -207,6 +293,7 @@ export default {
                     const loweredSearchText = this.searchText.toLowerCase();
                     searchTextMatch =
                         stack.name.toLowerCase().includes(loweredSearchText)
+                        || stack.folder?.toLowerCase().includes(loweredSearchText)
                         || stack.tags.find(tag => tag.name.toLowerCase().includes(loweredSearchText)
                             || tag.value?.toLowerCase().includes(loweredSearchText));
                 }
@@ -279,6 +366,7 @@ export default {
                 endpoint,
                 stacks,
                 managed: stacks.filter(stack => stack.isManagedByDockge),
+                tree: buildFolderTree(stacks.filter(stack => stack.isManagedByDockge)),
                 unmanaged: stacks.filter(stack => !stack.isManagedByDockge && !isTrueNASApp(stack)),
                 truenasApps: stacks.filter(stack => !stack.isManagedByDockge && isTrueNASApp(stack)),
             })).sort((a, b) => {
@@ -385,6 +473,82 @@ export default {
             } catch (e) {
                 // ignore
             }
+        },
+
+        /**
+         * Folders are open unless the user closed them, and always open while searching
+         * @param {string} endpoint Endpoint
+         * @param {string} path Folder path
+         * @returns {boolean} true if open
+         */
+        isFolderOpen(endpoint, path) {
+            return this.searchText !== "" || this.openGroups[endpoint + "|folder:" + path] !== false;
+        },
+
+        toggleFolder(endpoint, path) {
+            const key = endpoint + "|folder:" + path;
+            this.openGroups[key] = !this.isFolderOpen(endpoint, path);
+            try {
+                window.localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify(this.openGroups));
+            } catch (e) {
+                // ignore
+            }
+        },
+
+        /**
+         * Move a stack (dropped on a folder) to that folder
+         * @param {object} data { name, endpoint } of the dragged stack
+         * @param {string} folder Target folder, "" for none
+         * @returns {void}
+         */
+        moveStack(data, folder) {
+            this.dragging = false;
+            this.$root.emitAgent(data.endpoint || "", "setStackFolder", data.name, folder, (res) => {
+                if (!res.ok) {
+                    this.$root.toastRes(res);
+                }
+            });
+        },
+
+        onDragStart() {
+            // Changing the DOM synchronously in dragstart can cancel the drag in Chrome
+            setTimeout(() => {
+                this.dragging = true;
+            }, 0);
+        },
+
+        onRootDragOver(e, endpoint) {
+            if (e.dataTransfer?.types.includes(DRAG_TYPE)) {
+                e.preventDefault();
+                this.rootDropActive = endpoint;
+            }
+        },
+
+        onRootDrop(e, endpoint) {
+            this.rootDropActive = null;
+            const raw = e.dataTransfer?.getData(DRAG_TYPE);
+            if (raw) {
+                e.preventDefault();
+                this.moveStack(JSON.parse(raw), "");
+            }
+        },
+
+        /**
+         * Rename or move a folder (e.g. "media/arr" -> "arr" or "apps/media/arr")
+         * @param {string} endpoint Endpoint of the list ("current" for this instance)
+         * @param {string} path Folder path
+         * @returns {void}
+         */
+        renameFolder(endpoint, path) {
+            const newPath = window.prompt(this.$t("renameFolderPrompt"), path);
+            if (newPath === null || newPath.trim() === path) {
+                return;
+            }
+            this.$root.emitAgent(endpoint === "current" ? "" : endpoint, "renameStackFolder", path, newPath, (res) => {
+                if (!res.ok) {
+                    this.$root.toastRes(res);
+                }
+            });
         },
 
         /**
@@ -618,6 +782,21 @@ export default {
         .dark & {
             color: $dark-font-color;
         }
+    }
+}
+
+.root-drop-zone {
+    margin: 4px 0 8px;
+    padding: 8px;
+    text-align: center;
+    font-size: 13px;
+    color: $dark-font-color3;
+    border: 1px dashed rgba(128, 128, 128, 0.5);
+    border-radius: 10px;
+
+    &.drop-target {
+        border-color: $primary;
+        background-color: rgba($primary, 0.15);
     }
 }
 

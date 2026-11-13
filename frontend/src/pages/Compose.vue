@@ -51,6 +51,14 @@
                             <font-awesome-icon icon="stop" class="me-1" />
                             {{ $t("downStack") }}
                         </BDropdownItem>
+                        <BDropdownItem v-if="!isEditMode" @click="openFolderDialog">
+                            <font-awesome-icon icon="folder" class="me-1" />
+                            {{ $t("moveToFolder") }}
+                        </BDropdownItem>
+                        <BDropdownItem v-if="!isEditMode" @click="openRenameDialog">
+                            <font-awesome-icon icon="pen" class="me-1" />
+                            {{ $t("renameStack") }}
+                        </BDropdownItem>
                     </BDropdown>
                 </div>
 
@@ -192,6 +200,10 @@
                     <!-- YAML editor -->
                     <ExpandableBox :title="stack.composeFileName" class="mb-3">
                         <template #actions="{ expanded }">
+                            <button v-if="isEditMode" class="btn btn-sm btn-normal" :title="$t('insertHostPathHint')" @click="insertHostPath">
+                                <font-awesome-icon icon="folder-open" class="me-1" />
+                                {{ $t("insertHostPath") }}
+                            </button>
                             <template v-if="expanded && isEditMode">
                                 <button class="btn btn-sm btn-primary" :disabled="processing" @click="deployStack">
                                     <font-awesome-icon icon="rocket" class="me-1" />
@@ -211,7 +223,7 @@
                                     :extensions="extensions"
                                     minimal
                                     wrap="true"
-                                    dark="true"
+                                    :dark="$root.isDark"
                                     tab="true"
                                     :disabled="!isEditMode"
                                     :hasFocus="editorFocus"
@@ -248,7 +260,7 @@
                                     :extensions="extensionsEnv"
                                     minimal
                                     wrap="true"
-                                    dark="true"
+                                    :dark="$root.isDark"
                                     tab="true"
                                     :disabled="!isEditMode"
                                     :hasFocus="editorFocus"
@@ -288,6 +300,40 @@
                 {{ $t("stackNotManagedByDockgeMsg") }}
             </div>
 
+            <PathPicker ref="pathPicker" :endpoint="endpoint" />
+
+            <!-- Folder Dialog -->
+            <BModal v-model="showFolderDialog" :title="$t('moveToFolder')" :cancelTitle="$t('cancel')" :okTitle="$t('moveToFolder')" @ok="setFolder">
+                <label for="stack-folder" class="form-label">{{ $t("folder") }}</label>
+                <input id="stack-folder" v-model="folderInput" type="text" class="form-control" list="stack-folder-list" placeholder="media/arr" @keyup.enter="setFolder(); showFolderDialog = false">
+                <datalist id="stack-folder-list">
+                    <option v-for="folder in existingFolders" :key="folder" :value="folder" />
+                </datalist>
+                <div class="form-text">{{ $t("folderHelp") }}</div>
+            </BModal>
+
+            <!-- Rename Dialog -->
+            <BModal v-model="showRenameDialog" :title="$t('renameStack')" :cancelTitle="$t('cancel')" :okTitle="$t('renameStack')" :okDisabled="!renameNewName || renameNewName === stack.name" @ok="renameStack">
+                <label for="rename-stack" class="form-label">{{ $t("newStackName") }}</label>
+                <input id="rename-stack" v-model="renameNewName" type="text" class="form-control" @input="renameNewName = renameNewName.toLowerCase()" @keyup.enter="renameStack(); showRenameDialog = false">
+                <div class="form-text">{{ $t("Lowercase only") }}</div>
+
+                <div class="alert alert-warning mt-3 mb-0">
+                    {{ $t("renameStackWarning") }}
+                </div>
+
+                <div v-if="renameVolumes.length > 0" class="mt-3">
+                    <p class="mb-2">
+                        {{ $t("renameStackVolumesWarning") }}
+                        <code v-for="volume in renameVolumes" :key="volume" class="me-2">{{ volume }}</code>
+                    </p>
+                    <div class="form-check">
+                        <input id="rename-keep-volumes" v-model="renameKeepVolumes" class="form-check-input" type="checkbox">
+                        <label class="form-check-label" for="rename-keep-volumes">{{ $t("renameStackKeepVolumes") }}</label>
+                    </div>
+                </div>
+            </BModal>
+
             <!-- Delete Dialog -->
             <BModal v-model="showDeleteDialog" :cancelTitle="$t('cancel')" :okTitle="$t('deleteStack')" okVariant="danger" @ok="deleteDialog">
                 {{ $t("deleteStackMsg") }}
@@ -300,7 +346,7 @@
 import CodeMirror from "vue-codemirror6";
 import { yaml } from "@codemirror/lang-yaml";
 import { python } from "@codemirror/lang-python";
-import { dracula as editorTheme } from "thememirror";
+import { dracula as editorThemeDark, tomorrow as editorThemeLight } from "thememirror";
 import { lineNumbers, EditorView } from "@codemirror/view";
 import { parseDocument, Document } from "yaml";
 
@@ -318,6 +364,7 @@ import {
 import { BModal } from "bootstrap-vue-next";
 import NetworkInput from "../components/NetworkInput.vue";
 import ExpandableBox from "../components/ExpandableBox.vue";
+import PathPicker from "../components/PathPicker.vue";
 import dotenv from "dotenv";
 import { ref } from "vue";
 
@@ -340,9 +387,16 @@ export default {
     components: {
         NetworkInput,
         ExpandableBox,
+        PathPicker,
         FontAwesomeIcon,
         CodeMirror,
         BModal,
+    },
+    provide() {
+        return {
+            // Used by the volume path picker (ArrayInput)
+            composeEndpoint: () => this.endpoint,
+        };
     },
     beforeRouteUpdate(to, from, next) {
         this.exitConfirm(next);
@@ -358,23 +412,18 @@ export default {
             return null;
         };
 
-        const extensions = [
-            editorTheme,
-            yaml(),
-            lineNumbers(),
-            EditorView.focusChangeEffect.of(focusEffectHandler)
-        ];
+        const focusEffect = EditorView.focusChangeEffect.of(focusEffectHandler);
+        const yamlLanguage = yaml();
+        const envLanguage = python();
+        const lineNumbersExtension = lineNumbers();
 
-        const extensionsEnv = [
-            editorTheme,
-            python(),
-            lineNumbers(),
-            EditorView.focusChangeEffect.of(focusEffectHandler)
-        ];
-
-        return { extensions,
-            extensionsEnv,
-            editorFocus };
+        return {
+            focusEffect,
+            yamlLanguage,
+            envLanguage,
+            lineNumbersExtension,
+            editorFocus,
+        };
     },
     yamlDoc: null,  // For keeping the yaml comments
     data() {
@@ -400,9 +449,28 @@ export default {
             stopDockerStatsTimeout: false,
             // Service whose logs are shown in the terminal, "" = all services
             logService: "",
+            showRenameDialog: false,
+            showFolderDialog: false,
+            folderInput: "",
+            renameNewName: "",
+            renameVolumes: [],
+            renameKeepVolumes: true,
         };
     },
     computed: {
+        // The dark theme (dracula) is unreadable on the white background of the light theme
+        editorTheme() {
+            return this.$root.isDark ? editorThemeDark : editorThemeLight;
+        },
+
+        extensions() {
+            return [ this.editorTheme, this.yamlLanguage, this.lineNumbersExtension, this.focusEffect ];
+        },
+
+        extensionsEnv() {
+            return [ this.editorTheme, this.envLanguage, this.lineNumbersExtension, this.focusEffect ];
+        },
+
         endpointDisplay() {
             return this.$root.endpointDisplayFunction(this.endpoint);
         },
@@ -468,6 +536,24 @@ export default {
             return getCombinedTerminalName(this.endpoint, this.stack.name);
         },
 
+        /**
+         * Folders already used by the stacks of the same endpoint, including parent folders
+         * @returns {string[]} Folder paths
+         */
+        existingFolders() {
+            const set = new Set();
+            for (const stack of Object.values(this.$root.completeStackList)) {
+                if ((stack.endpoint || "") !== (this.endpoint || "") || !stack.folder) {
+                    continue;
+                }
+                const parts = stack.folder.split("/");
+                for (let i = 1; i <= parts.length; i++) {
+                    set.add(parts.slice(0, i).join("/"));
+                }
+            }
+            return [ ...set ].sort();
+        },
+
         logTerminalName() {
             if (!this.stack.name) {
                 return "";
@@ -524,6 +610,13 @@ export default {
 
         jsonConfig: {
             handler() {
+                // jsonConfig was just parsed from the YAML text (load, typing, discard...):
+                // do not write it back, it would reformat the user's file and drop its style
+                if (this.jsonConfigFromYAML) {
+                    this.jsonConfigFromYAML = false;
+                    return;
+                }
+
                 if (!this.editorFocus) {
                     console.debug("jsonConfig changed");
 
@@ -804,6 +897,73 @@ export default {
             });
         },
 
+        /**
+         * Pick a folder of the host and insert it at the cursor of the compose.yaml editor
+         * @returns {Promise<void>}
+         */
+        async insertHostPath() {
+            const view = this.$refs.editor?.view;
+            const picked = await this.$refs.pathPicker.open("");
+            if (!picked || !view) {
+                return;
+            }
+            view.dispatch(view.state.replaceSelection(picked));
+            view.focus();
+            this.$nextTick(() => this.yamlCodeChange());
+        },
+
+        openFolderDialog() {
+            this.folderInput = this.globalStack?.folder ?? "";
+            this.showFolderDialog = true;
+        },
+
+        setFolder() {
+            this.$root.emitAgent(this.endpoint, "setStackFolder", this.stack.name, this.folderInput, (res) => {
+                if (!res.ok) {
+                    this.$root.toastRes(res);
+                    return;
+                }
+                // The compose file changed on disk, reload it unless the user is editing
+                if (!this.isEditMode) {
+                    this.loadStack();
+                }
+            });
+        },
+
+        openRenameDialog() {
+            this.renameNewName = this.stack.name;
+            this.renameVolumes = [];
+            this.renameKeepVolumes = true;
+            this.showRenameDialog = true;
+
+            this.$root.emitAgent(this.endpoint, "getProjectScopedVolumes", this.stack.name, (res) => {
+                if (res.ok) {
+                    this.renameVolumes = res.volumes;
+                }
+            });
+        },
+
+        renameStack() {
+            const newName = this.renameNewName.trim();
+            if (!newName || newName === this.stack.name) {
+                return;
+            }
+
+            this.processing = true;
+            this.$root.emitAgent(this.endpoint, "renameStack", this.stack.name, newName, this.renameKeepVolumes, (res) => {
+                this.processing = false;
+                this.$root.toastRes(res);
+
+                if (res.ok) {
+                    if (this.endpoint) {
+                        this.$router.push(`/compose/${newName}/${this.endpoint}`);
+                    } else {
+                        this.$router.push(`/compose/${newName}`);
+                    }
+                }
+            });
+        },
+
         deleteDialog() {
             this.$root.emitAgent(this.endpoint, "deleteStack", this.stack.name, (res) => {
                 this.$root.toastRes(res);
@@ -847,6 +1007,7 @@ export default {
                 let { config, doc } = this.yamlToJSON(this.stack.composeYAML);
 
                 this.yamlDoc = doc;
+                this.jsonConfigFromYAML = true;
                 this.jsonConfig = config;
 
                 let env = dotenv.parse(this.stack.composeENV);

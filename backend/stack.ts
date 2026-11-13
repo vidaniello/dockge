@@ -20,6 +20,7 @@ import {
 import { InteractiveTerminal, Terminal } from "./terminal";
 import childProcessAsync from "promisify-child-process";
 import { Settings } from "./settings";
+import { deleteIn, setStringIn } from "./yaml-text-edit";
 
 export class Stack {
 
@@ -80,14 +81,96 @@ export class Stack {
     }
 
     toSimpleJSON(endpoint : string) : object {
+        const isManagedByDockge = this.isManagedByDockge;
         return {
             name: this.name,
             status: this._status,
             tags: [],
-            isManagedByDockge: this.isManagedByDockge,
+            isManagedByDockge,
             composeFileName: this._composeFileName,
             endpoint,
+            folder: isManagedByDockge ? this.folder : "",
         };
+    }
+
+    protected _folderCache? : { yaml: string, folder: string };
+
+    /**
+     * Virtual folder of the stack in the sidebar, stored in the compose file as
+     *   x-dockge:
+     *     folder: media/arr
+     * The folder only exists in Dockge's UI: the stack stays in <stacks dir>/<name> on disk.
+     */
+    get folder() : string {
+        const composeYAML = this.composeYAML;
+        if (this._folderCache && this._folderCache.yaml === composeYAML) {
+            return this._folderCache.folder;
+        }
+
+        let folder = "";
+        try {
+            const value = yaml.parse(composeYAML)?.["x-dockge"]?.folder;
+            if (typeof(value) === "string") {
+                folder = Stack.normalizeFolder(value);
+            }
+        } catch (e) {
+            // Invalid YAML: no folder
+        }
+
+        this._folderCache = {
+            yaml: composeYAML,
+            folder,
+        };
+        return folder;
+    }
+
+    /**
+     * "  media / arr/ " => "media/arr"
+     * @param folder Folder path
+     */
+    static normalizeFolder(folder : string) : string {
+        return folder.split("/")
+            .map((part) => part.trim())
+            .filter((part) => part !== "")
+            .join("/");
+    }
+
+    /**
+     * Move the stack to a virtual folder ("" = no folder). Only x-dockge.folder is changed in the compose file.
+     * @param folder Folder path, e.g. "media/arr"
+     */
+    async setFolder(folder : string) {
+        if (!this.isManagedByDockge) {
+            throw new ValidationError("Only stacks managed by Dockge can be moved to a folder");
+        }
+
+        folder = Stack.normalizeFolder(folder);
+
+        // eslint-disable-next-line no-control-regex
+        if (folder.length > 200 || /[\x00-\x1f]/.test(folder)) {
+            throw new ValidationError("Invalid folder name");
+        }
+
+        const filePath = path.join(this.path, this._composeFileName);
+        const content = await fsAsync.readFile(filePath, "utf-8");
+        const doc = yaml.parseDocument(content);
+
+        if (doc.errors.length > 0) {
+            throw new ValidationError("The compose file contains errors, fix it first");
+        }
+
+        // Only the folder line is touched, the rest of the file is kept as written
+        let updated : string;
+        if (folder) {
+            updated = setStringIn(content, [ "x-dockge", "folder" ], folder);
+        } else if (doc.hasIn([ "x-dockge", "folder" ])) {
+            updated = deleteIn(content, [ "x-dockge", "folder" ]);
+        } else {
+            return;
+        }
+
+        await fsAsync.writeFile(filePath, updated);
+        this._composeYAML = undefined;
     }
 
     /**
@@ -212,6 +295,109 @@ export class Stack {
             throw new Error("Failed to deploy, please check the terminal output for more information.");
         }
         return exitCode;
+    }
+
+    /**
+     * Named volumes declared by this stack whose real name depends on the project name
+     * (not external, no explicit "name:"). Docker names them "<project>_<volume>", so after a rename
+     * compose would create new, empty volumes.
+     */
+    getProjectScopedVolumes() : string[] {
+        let config;
+        try {
+            config = yaml.parse(this.composeYAML) ?? {};
+        } catch (e) {
+            return [];
+        }
+        const volumes = config.volumes;
+        if (!volumes || typeof volumes !== "object") {
+            return [];
+        }
+        return Object.keys(volumes).filter((key) => {
+            const volume = volumes[key];
+            return !(volume && typeof volume === "object" && (volume.external || volume.name));
+        });
+    }
+
+    /**
+     * Rename the stack: stop it, rename its folder, start it again if it was running.
+     * @param socket Socket
+     * @param newName New stack name
+     * @param keepVolumes Pin the names of project scoped named volumes (name: <old project>_<volume>) so the data is kept
+     * @returns The renamed stack
+     */
+    async rename(socket: DockgeSocket, newName: string, keepVolumes: boolean) : Promise<Stack> {
+        if (!this.isManagedByDockge) {
+            throw new ValidationError("Only stacks managed by Dockge can be renamed");
+        }
+
+        if (newName === this.name) {
+            throw new ValidationError("The new name is the same as the current one");
+        }
+
+        const newStack = new Stack(this.server, newName, undefined, undefined, true);
+        newStack._composeYAML = "services: {}";
+        newStack._composeENV = "";
+        newStack.validate();
+
+        if (await fileExists(newStack.path)) {
+            throw new ValidationError("Stack name already exists");
+        }
+
+        // Also refuse names already used by a compose project not managed by Dockge
+        const statusList = await Stack.getStatusList();
+        if (statusList.has(newName)) {
+            throw new ValidationError("A compose project with this name already exists");
+        }
+
+        await this.updateStatus();
+        const wasRunning = this.status === RUNNING;
+        const exists = this.status !== UNKNOWN;
+        const oldName = this.name;
+
+        // Update the compose file before moving it (surgical edits, the rest of the file is kept as written)
+        let content = this.composeYAML;
+        const originalContent = content;
+
+        // A top-level "name:" equal to the folder name would keep the old project name
+        if (yaml.parse(content)?.name === oldName) {
+            content = setStringIn(content, [ "name" ], newName);
+        }
+
+        if (keepVolumes) {
+            for (const volume of this.getProjectScopedVolumes()) {
+                content = setStringIn(content, [ "volumes", volume, "name" ], `${oldName}_${volume}`);
+            }
+        }
+        const changed = content !== originalContent;
+
+        // Remove the containers and networks of the old project. Volumes are never removed.
+        if (exists) {
+            const terminalName = getComposeTerminalName(socket.endpoint, oldName);
+            const exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("down", "--remove-orphans"), this.path);
+            if (exitCode !== 0) {
+                throw new Error("Failed to stop the stack, please check the terminal output for more information.");
+            }
+        }
+
+        await fsAsync.rename(this.path, newStack.path);
+
+        const renamed = await Stack.getStack(this.server, newName);
+        if (changed) {
+            fs.writeFileSync(path.join(renamed.path, renamed._composeFileName), content);
+            renamed._composeYAML = undefined;
+        }
+
+        if (wasRunning) {
+            const terminalName = getComposeTerminalName(socket.endpoint, newName);
+            const exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", renamed.getComposeOptions("up", "-d", "--remove-orphans"), renamed.path);
+            if (exitCode !== 0) {
+                throw new Error("The stack was renamed but failed to start, please check the terminal output for more information.");
+            }
+        }
+
+        log.info("stack", `Renamed stack ${oldName} to ${newName}`);
+        return renamed;
     }
 
     async delete(socket: DockgeSocket) : Promise<number> {

@@ -126,7 +126,7 @@
                     <label class="form-label">
                         {{ $tc("volume", 2) }}
                     </label>
-                    <ArrayInput name="volumes" :display-name="$t('volume')" placeholder="HOST:CONTAINER" />
+                    <ArrayInput name="volumes" :display-name="$t('volume')" placeholder="HOST:CONTAINER" browse />
                 </div>
 
                 <!-- Restart Policy -->
