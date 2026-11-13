@@ -122,7 +122,7 @@
                     <label class="form-label">
                         {{ $tc("port", 2) }}
                     </label>
-                    <ArrayInput name="ports" :display-name="$t('port')" placeholder="HOST:CONTAINER" />
+                    <ArrayInput name="ports" :display-name="$t('port')" placeholder="HOST:CONTAINER" ip-picker />
                 </div>
 
                 <!-- Volumes -->

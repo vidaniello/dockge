@@ -4,6 +4,7 @@ import { callbackError, callbackResult, checkLogin, DockgeSocket, ValidationErro
 import { Stack } from "../stack";
 import { AgentSocket } from "../../common/agent-socket";
 import { listDirectory } from "../file-browser";
+import { getHostIPs } from "../host-ips";
 import { imageUpdateChecker } from "../image-update-checker";
 import { log } from "../log";
 
@@ -223,6 +224,19 @@ export class DockerSocketHandler extends AgentSocketHandler {
                     ok: true,
                     msg: "imageUpdateCheckDone",
                     msgi18n: true,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // IP addresses of the host, to bind published ports to a specific IP
+        agentSocket.on("getHostIPs", async (callback) => {
+            try {
+                checkLogin(socket);
+                callbackResult({
+                    ok: true,
+                    ...(await getHostIPs()),
                 }, callback);
             } catch (e) {
                 callbackError(e, callback);

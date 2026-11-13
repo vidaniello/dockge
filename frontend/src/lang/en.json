@@ -197,5 +197,7 @@
     "imageUpdateInterval": "Check for image updates",
     "imageUpdateIntervalHelp": "Dockge asks the registries if newer images exist for the tags used by your stacks (nothing is downloaded). Use Update on a stack to pull and redeploy. Add x-dockge: { checkUpdates: false } to a compose file to skip it.",
     "everyHours": "Every {0} hours",
-    "disabled": "Disabled"
+    "disabled": "Disabled",
+    "bindToIP": "Publish this port only on this IP of the host",
+    "allIPs": "All IPs"
 }

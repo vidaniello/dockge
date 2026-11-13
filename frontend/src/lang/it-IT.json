@@ -161,5 +161,7 @@
     "imageUpdateInterval": "Controllo aggiornamenti immagini",
     "imageUpdateIntervalHelp": "Dockge chiede ai registry se esistono immagini più recenti per i tag usati dai tuoi stack (senza scaricare nulla). Usa Aggiorna su uno stack per scaricarle e fare il redeploy. Aggiungi x-dockge: { checkUpdates: false } a un compose per escluderlo.",
     "everyHours": "Ogni {0} ore",
-    "disabled": "Disattivato"
+    "disabled": "Disattivato",
+    "bindToIP": "Pubblica questa porta solo su questo IP dell'host",
+    "allIPs": "Tutti gli IP"
 }

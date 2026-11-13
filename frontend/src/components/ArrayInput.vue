@@ -3,6 +3,18 @@
         <div v-if="valid">
             <ul v-if="isArrayInited" class="list-group">
                 <li v-for="(value, index) in array" :key="index" class="list-group-item">
+                    <select
+                        v-if="ipPicker"
+                        class="form-select form-select-sm ip-select me-2"
+                        :value="splitHostIp(array[index]).ip"
+                        :title="$t('bindToIP')"
+                        @change="setHostIp(index, $event.target.value)"
+                    >
+                        <option value="">{{ $t("allIPs") }}</option>
+                        <option v-for="ip in ipOptions(array[index])" :key="ip.address" :value="ip.address">
+                            {{ ip.address }}{{ ip.interface ? ` (${ip.interface})` : "" }}
+                        </option>
+                    </select>
                     <input v-model="array[index]" type="text" class="no-bg domain-input" :placeholder="placeholder" />
                     <font-awesome-icon v-if="browse" icon="folder-open" class="action browse ms-2" :title="$t('pickHostPath')" @click="browsePath(index)" />
                     <font-awesome-icon icon="times" class="action remove ms-2 me-3 text-danger" @click="remove(index)" />
@@ -42,6 +54,11 @@ export default {
             type: Boolean,
             default: false,
         },
+        /** Show a dropdown to bind the port to one of the host IPs ("IP:HOST:CONTAINER") */
+        ipPicker: {
+            type: Boolean,
+            default: false,
+        },
         name: {
             type: String,
             required: true,
@@ -61,7 +78,7 @@ export default {
     },
     data() {
         return {
-
+            hostIPs: [],
         };
     },
     computed: {
@@ -118,6 +135,15 @@ export default {
         }
 
     },
+    mounted() {
+        if (this.ipPicker) {
+            this.$root.emitAgent(this.getEndpoint(), "getHostIPs", (res) => {
+                if (res.ok) {
+                    this.hostIPs = res.list;
+                }
+            });
+        }
+    },
     created() {
 
     },
@@ -140,6 +166,63 @@ export default {
         },
         remove(index) {
             this.array.splice(index, 1);
+        },
+
+        /**
+         * "192.168.1.10:8080:80" => { ip: "192.168.1.10", rest: "8080:80" }, "[::1]:80:80" => { ip: "::1", ... }
+         * @param {string|number} value Port mapping
+         * @returns {object} { ip, rest }
+         */
+        splitHostIp(value) {
+            const text = String(value ?? "");
+            const match = /^(\[[^\]]+\]|\d{1,3}(?:\.\d{1,3}){3}):(.*)$/.exec(text);
+            if (!match) {
+                return {
+                    ip: "",
+                    rest: text,
+                };
+            }
+            return {
+                ip: match[1].replace(/^\[|\]$/g, ""),
+                rest: match[2],
+            };
+        },
+
+        /**
+         * Bind the port mapping of a row to an IP ("" = all IPs)
+         * @param {number} index Row
+         * @param {string} ip IP address
+         * @returns {void}
+         */
+        setHostIp(index, ip) {
+            let rest = this.splitHostIp(this.array[index]).rest;
+            if (!ip) {
+                // "IP::80" (random host port) becomes "80"
+                this.array[index] = rest.startsWith(":") ? rest.slice(1) : rest;
+                return;
+            }
+            const host = ip.includes(":") ? `[${ip}]` : ip;
+            // Only the container port: keep a random host port
+            if (rest !== "" && !rest.includes(":")) {
+                rest = ":" + rest;
+            }
+            this.array[index] = `${host}:${rest}`;
+        },
+
+        /**
+         * Host IPs, plus the IP already used by the row if it is not in the list
+         * @param {string} value Port mapping
+         * @returns {object[]} IPs
+         */
+        ipOptions(value) {
+            const current = this.splitHostIp(value).ip;
+            if (current && !this.hostIPs.some((ip) => ip.address === current)) {
+                return [ ...this.hostIPs, {
+                    address: current,
+                    interface: "",
+                }];
+            }
+            return this.hostIPs;
         },
 
         /**
@@ -180,6 +263,12 @@ export default {
 .browse {
     cursor: pointer;
     color: $warning;
+}
+
+.ip-select {
+    width: auto;
+    max-width: 45%;
+    flex-shrink: 0;
 }
 
 .list-group {
