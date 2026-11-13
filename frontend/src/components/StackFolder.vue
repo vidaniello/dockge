@@ -3,15 +3,29 @@
         <div
             ref="header"
             class="folder-header"
-            :class="{ 'drop-target': isDropTarget && !isDragSource }"
+            :class="dropClass"
             :style="{ paddingLeft: (10 + 16 * depth) + 'px' }"
-            @click="$emit('toggle', node.path)"
+            @click="renaming ? null : $emit('toggle', node.path)"
         >
             <font-awesome-icon class="me-2 chevron" :class="{ open }" icon="chevron-right" />
             <font-awesome-icon class="me-2 folder-icon" :icon="open ? 'folder-open' : 'folder'" />
-            <span class="folder-name">{{ node.name }}</span>
 
-            <span class="folder-actions">
+            <!-- Rename on the folder's own row -->
+            <input
+                v-if="renaming"
+                ref="renameInput"
+                v-model="renameValue"
+                class="form-control form-control-sm rename-input"
+                maxlength="200"
+                @click.stop
+                @pointerdown.stop
+                @keydown.enter.prevent="submitRename"
+                @keydown.esc.prevent="cancelRename"
+                @blur="submitRename"
+            />
+            <span v-else class="folder-name">{{ node.name }}</span>
+
+            <span v-if="!renaming" class="folder-actions">
                 <button type="button" class="action" :title="$t('newSubfolder')" :aria-label="$t('newSubfolder')" @click.stop="$emit('new-folder', node.path)">
                     <font-awesome-icon icon="folder-plus" />
                 </button>
@@ -22,36 +36,41 @@
                     <font-awesome-icon icon="trash" />
                 </button>
             </span>
-            <span v-if="node.count > 0" class="badge rounded-pill folder-count ms-2">{{ node.count }}</span>
+            <span v-if="node.count > 0 && !renaming" class="badge rounded-pill folder-count ms-2">{{ node.count }}</span>
         </div>
 
         <div v-show="open">
             <slot name="before-children" :path="node.path"></slot>
-            <StackFolder
-                v-for="child in node.folders"
-                :key="child.path"
-                :node="child"
-                :depth="depth + 1"
-                :endpoint="endpoint"
-                :is-open="isOpen"
-                :item-props="itemProps"
-                @toggle="$emit('toggle', $event)"
-                @new-folder="$emit('new-folder', $event)"
-                @rename-folder="$emit('rename-folder', $event)"
-                @delete-folder="$emit('delete-folder', $event)"
-            >
-                <template #before-children="slotProps">
-                    <slot name="before-children" v-bind="slotProps"></slot>
-                </template>
-            </StackFolder>
-            <StackListItem
-                v-for="item in node.stacks"
-                :key="item.name"
-                :stack="item"
-                :depth="depth + 1"
-                v-bind="itemProps"
-            />
-            <div v-if="node.folders.length === 0 && node.stacks.length === 0" class="empty-folder" :style="{ paddingLeft: (36 + 16 * depth) + 'px' }">
+            <template v-for="item in node.items" :key="item.key">
+                <StackFolder
+                    v-if="item.type === 'folder'"
+                    :node="item.node"
+                    :parent="node.path"
+                    :depth="depth + 1"
+                    :endpoint="endpoint"
+                    :is-open="isOpen"
+                    :item-props="itemProps"
+                    :renaming-path="renamingPath"
+                    @toggle="$emit('toggle', $event)"
+                    @new-folder="$emit('new-folder', $event)"
+                    @rename-folder="$emit('rename-folder', $event)"
+                    @rename-submit="$emit('rename-submit', $event)"
+                    @rename-cancel="$emit('rename-cancel')"
+                    @delete-folder="$emit('delete-folder', $event)"
+                >
+                    <template #before-children="slotProps">
+                        <slot name="before-children" v-bind="slotProps"></slot>
+                    </template>
+                </StackFolder>
+                <StackListItem
+                    v-else
+                    :stack="item.stack"
+                    :parent="node.path"
+                    :depth="depth + 1"
+                    v-bind="itemProps"
+                />
+            </template>
+            <div v-if="node.items.length === 0" class="empty-folder" :style="{ paddingLeft: (36 + 16 * depth) + 'px' }">
                 {{ $t("emptyFolder") }}
             </div>
         </div>
@@ -59,13 +78,13 @@
 </template>
 
 <script>
-import { computed, ref } from "vue";
+import { computed, inject, ref } from "vue";
 import { useDraggable, useDroppable } from "@dnd-kit/vue";
 import StackListItem from "./StackListItem.vue";
 
 /**
- * A virtual folder of the sidebar. Its header can be dragged (to move the folder into another one)
- * and is a drop target for stacks and folders (dnd-kit, the drop is handled in StackList.vue).
+ * A virtual folder of the sidebar. Its header can be dragged (to move or reorder the folder)
+ * and is a drop target: before / after it, or into it (dnd-kit, the drop is handled in StackList.vue).
  */
 export default {
     name: "StackFolder",
@@ -73,10 +92,15 @@ export default {
         StackListItem,
     },
     props: {
-        /** { name, path, folders: [], stacks: [], count } */
+        /** { name, path, items: [], count } */
         node: {
             type: Object,
             required: true,
+        },
+        /** Path of the parent folder, "" = top level */
+        parent: {
+            type: String,
+            default: "",
         },
         depth: {
             type: Number,
@@ -95,34 +119,98 @@ export default {
             type: Object,
             default: () => ({}),
         },
+        /** Path of the folder being renamed, if any */
+        renamingPath: {
+            type: String,
+            default: "",
+        },
     },
-    emits: [ "toggle", "new-folder", "rename-folder", "delete-folder" ],
+    emits: [ "toggle", "new-folder", "rename-folder", "rename-submit", "rename-cancel", "delete-folder" ],
     setup(props) {
         const header = ref(null);
-        const data = computed(() => ({
-            kind: "folder",
-            path: props.node.path,
-            endpoint: props.endpoint,
-        }));
+        const dropHint = inject("sidebarDropHint", null);
+        const droppableId = computed(() => `drop-folder:${props.endpoint}:${props.node.path}`);
+
         const { isDragSource } = useDraggable({
             id: computed(() => `folder:${props.endpoint}:${props.node.path}`),
             element: header,
-            data,
+            data: computed(() => ({
+                kind: "folder",
+                path: props.node.path,
+                endpoint: props.endpoint,
+            })),
         });
         const { isDropTarget } = useDroppable({
-            id: computed(() => `drop-folder:${props.endpoint}:${props.node.path}`),
+            id: droppableId,
             element: header,
-            data,
+            data: computed(() => ({
+                itemType: "folder",
+                key: "f:" + props.node.name,
+                parent: props.parent,
+                path: props.node.path,
+                endpoint: props.endpoint,
+            })),
         });
+
+        const dropClass = computed(() => {
+            if (!isDropTarget.value || isDragSource.value || !dropHint || dropHint.id !== droppableId.value) {
+                return {};
+            }
+            return {
+                "drop-before": dropHint.zone === "before",
+                "drop-after": dropHint.zone === "after",
+                "drop-target": dropHint.zone === "into",
+            };
+        });
+
         return {
             header,
             isDragSource,
-            isDropTarget,
+            dropClass,
+        };
+    },
+    data() {
+        return {
+            renameValue: "",
+            renameDone: false,
         };
     },
     computed: {
         open() {
             return this.isOpen(this.node.path);
+        },
+        renaming() {
+            return this.renamingPath === this.node.path;
+        },
+    },
+    watch: {
+        renaming(value) {
+            if (value) {
+                this.renameValue = this.node.name;
+                this.renameDone = false;
+                this.$nextTick(() => {
+                    this.$refs.renameInput?.focus();
+                    this.$refs.renameInput?.select();
+                });
+            }
+        },
+    },
+    methods: {
+        submitRename() {
+            if (this.renameDone) {
+                return;
+            }
+            this.renameDone = true;
+            const value = this.renameValue.trim();
+            if (!value || value === this.node.name) {
+                this.$emit("rename-cancel");
+            } else {
+                this.$emit("rename-submit", value);
+            }
+        },
+        cancelRename() {
+            this.renameDone = true;
+            this.$emit("rename-cancel");
         },
     },
 };
@@ -144,6 +232,7 @@ export default {
     border-radius: 10px;
     border: 1px dashed transparent;
     transition: background-color 0.15s, border-color 0.15s;
+    position: relative;
 
     &:hover {
         background-color: $highlight-white;
@@ -160,6 +249,26 @@ export default {
     &.drop-target {
         border-color: $primary;
         background-color: rgba($primary, 0.18);
+    }
+
+    // Insertion line before / after the folder
+    &.drop-before::before,
+    &.drop-after::after {
+        content: "";
+        position: absolute;
+        left: 8px;
+        right: 8px;
+        height: 3px;
+        border-radius: 2px;
+        background-color: $primary;
+    }
+
+    &.drop-before::before {
+        top: -2px;
+    }
+
+    &.drop-after::after {
+        bottom: -2px;
     }
 
     .chevron {
@@ -182,6 +291,14 @@ export default {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+
+    .rename-input {
+        flex: 1;
+        min-width: 0;
+        height: 26px;
+        padding-top: 0;
+        padding-bottom: 0;
     }
 
     .folder-actions {

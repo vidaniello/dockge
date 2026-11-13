@@ -175,16 +175,28 @@ export default {
                 return;
             }
 
-            this.jsonConfig.networks = {};
+            const networks = {};
 
             // Internal networks
             for (const networkRow of this.networkList) {
-                this.jsonConfig.networks[networkRow.key] = networkRow.value;
+                networks[networkRow.key] = networkRow.value;
             }
 
             // External networks
             for (const networkName in this.externalList) {
-                this.jsonConfig.networks[networkName] = this.externalList[networkName];
+                networks[networkName] = this.externalList[networkName];
+            }
+
+            // Only touch the YAML when the networks really changed: any change of jsonConfig rewrites
+            // compose.yaml, and entering the edit mode must not reformat it or add "networks: {}"
+            const current = this.jsonConfig.networks ?? {};
+            if (JSON.stringify(networks) === JSON.stringify(current)) {
+                return;
+            }
+            if (Object.keys(networks).length === 0) {
+                delete this.jsonConfig.networks;
+            } else {
+                this.jsonConfig.networks = networks;
             }
 
             console.debug("applyToYAML", this.jsonConfig.networks);

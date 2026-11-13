@@ -54,7 +54,7 @@
                 </span>
             </div>
         </div>
-        <DragDropProvider :sensors="sensors" @drag-start="dragging = true" @drag-end="onDragEnd">
+        <DragDropProvider :sensors="sensors" @drag-start="dragging = true" @drag-move="onDragMove" @drag-end="onDragEnd">
             <div ref="stackList" class="stack-list" :class="{ scrollbar: scrollbar }" :style="stackListStyle">
                 <div v-if="agentStackList[0] && agentStackList[0].stacks.length === 0" class="text-center mt-3">
                     <router-link to="/compose">{{ $t("addFirstStackMsg") }}</router-link>
@@ -81,37 +81,40 @@
                             @cancel="folderEdit = null"
                         />
 
-                        <!-- Virtual folders (x-dockge.folder + empty folders); drag & drop with dnd-kit -->
-                        <StackFolder
-                            v-for="folder in agent.tree.folders"
-                            :key="folder.path"
-                            :node="folder"
-                            :endpoint="agent.endpoint"
-                            :is-open="(path) => isFolderOpen(agent.endpoint, path)"
-                            :item-props="itemProps"
-                            @toggle="toggleFolder(agent.endpoint, $event)"
-                            @new-folder="startCreateFolder(agent.endpoint, $event)"
-                            @rename-folder="startRenameFolder(agent.endpoint, $event)"
-                            @delete-folder="deleteFolder(agent.endpoint, $event)"
-                        >
-                            <template #before-children="{ path }">
-                                <FolderNameInput
-                                    v-if="isEditingFolder(agent.endpoint, path)"
-                                    :initial="folderEdit.initial"
-                                    :depth="path.split('/').length"
-                                    :placeholder="$t('newFolderPlaceholder')"
-                                    @submit="submitFolderEdit"
-                                    @cancel="folderEdit = null"
-                                />
-                            </template>
-                        </StackFolder>
-
-                        <!-- Stacks managed by Dockge, not in a folder -->
-                        <StackListItem
-                            v-for="item in agent.tree.stacks"
-                            :key="item.name" :stack="item" :isSelectMode="selectMode"
-                            :isSelected="isSelected" :select="select" :deselect="deselect"
-                        />
+                        <!-- Folders and stacks of the top level, in the user's order (drag & drop with dnd-kit) -->
+                        <template v-for="item in agent.tree.items" :key="item.key">
+                            <StackFolder
+                                v-if="item.type === 'folder'"
+                                :node="item.node"
+                                parent=""
+                                :endpoint="agent.endpoint"
+                                :is-open="(path) => isFolderOpen(agent.endpoint, path)"
+                                :item-props="itemProps"
+                                :renaming-path="renamingPath(agent.endpoint)"
+                                @toggle="toggleFolder(agent.endpoint, $event)"
+                                @new-folder="startCreateFolder(agent.endpoint, $event)"
+                                @rename-folder="startRenameFolder(agent.endpoint, $event)"
+                                @rename-submit="submitFolderEdit"
+                                @rename-cancel="folderEdit = null"
+                                @delete-folder="deleteFolder(agent.endpoint, $event)"
+                            >
+                                <template #before-children="{ path }">
+                                    <FolderNameInput
+                                        v-if="isEditingFolder(agent.endpoint, path)"
+                                        :initial="folderEdit.initial"
+                                        :depth="path.split('/').length"
+                                        :placeholder="$t('newFolderPlaceholder')"
+                                        @submit="submitFolderEdit"
+                                        @cancel="folderEdit = null"
+                                    />
+                                </template>
+                            </StackFolder>
+                            <StackListItem
+                                v-else
+                                :stack="item.stack" parent="" :isSelectMode="selectMode"
+                                :isSelected="isSelected" :select="select" :deselect="deselect"
+                            />
+                        </template>
 
                         <!-- While dragging (below the list, so nothing moves under the pointer): drop here for the top level -->
                         <StackRootDropZone v-if="dragging" :endpoint="agent.endpoint" />
@@ -168,6 +171,7 @@ import FolderNameInput from "../components/FolderNameInput.vue";
 import { DragDropProvider, KeyboardSensor, PointerSensor } from "@dnd-kit/vue";
 import { PointerActivationConstraints } from "@dnd-kit/dom";
 import { CREATED_FILE, CREATED_STACK, EXITED, RUNNING, UNKNOWN } from "../../../common/util-common";
+import { reactive } from "vue";
 
 const OPEN_GROUPS_KEY = "dockge.sidebar.openGroups";
 
@@ -181,19 +185,26 @@ function isTrueNASApp(stack) {
 }
 
 /**
- * Build the tree of virtual folders. Folders are sorted by name, stacks keep the order of the list.
+ * Build the tree of virtual folders.
+ * Each node has "items": its sub folders and stacks, in the order chosen by the user (drag & drop),
+ * then the ones never ordered: folders by name, then stacks in the order of the list.
  * @param {object[]} stacks Sorted stacks
- * @returns {object} Root node { folders, stacks }
+ * @param {string[]} extraFolders Stored folders (also the empty ones)
+ * @param {object} order Manual order: folder path => ["f:name" | "s:name", ...]
+ * @returns {object} Root node, with "byPath" (folder path => node)
  */
-function buildFolderTree(stacks, extraFolders = []) {
-    const root = {
-        name: "",
-        path: "",
+function buildFolderTree(stacks, extraFolders = [], order = {}) {
+    const newNode = (name, path) => ({
+        name,
+        path,
         folders: [],
         stacks: [],
+        items: [],
         count: 0,
         children: new Map(),
-    };
+    });
+    const root = newNode("", "");
+    const byPath = new Map([[ "", root ]]);
 
     const ensure = (folder) => {
         let node = root;
@@ -201,23 +212,17 @@ function buildFolderTree(stacks, extraFolders = []) {
         for (const part of folder.split("/")) {
             currentPath = currentPath ? currentPath + "/" + part : part;
             if (!node.children.has(part)) {
-                const child = {
-                    name: part,
-                    path: currentPath,
-                    folders: [],
-                    stacks: [],
-                    count: 0,
-                    children: new Map(),
-                };
+                const child = newNode(part, currentPath);
                 node.children.set(part, child);
                 node.folders.push(child);
+                byPath.set(currentPath, child);
             }
             node = node.children.get(part);
         }
         return node;
     };
 
-    // Empty folders first, so they exist even without stacks
+    // Empty folders too
     for (const folder of extraFolders) {
         ensure(folder);
     }
@@ -225,33 +230,51 @@ function buildFolderTree(stacks, extraFolders = []) {
     for (const stack of stacks) {
         let node = root;
         if (stack.folder) {
-            let currentPath = "";
-            for (const part of stack.folder.split("/")) {
-                currentPath = currentPath ? currentPath + "/" + part : part;
-                if (!node.children.has(part)) {
-                    const child = {
-                        name: part,
-                        path: currentPath,
-                        folders: [],
-                        stacks: [],
-                        count: 0,
-                        children: new Map(),
-                    };
-                    node.children.set(part, child);
-                    node.folders.push(child);
-                }
-                node = node.children.get(part);
-                node.count++;
+            node = ensure(stack.folder);
+            // Count the stack in the folder and in its parents
+            let path = stack.folder;
+            while (path) {
+                byPath.get(path).count++;
+                path = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
             }
         }
         node.stacks.push(stack);
     }
 
-    const sortFolders = (node) => {
+    const sortNode = (node) => {
         node.folders.sort((a, b) => a.name.localeCompare(b.name));
-        node.folders.forEach(sortFolders);
+        const defaultItems = [
+            ...node.folders.map((folder) => ({
+                type: "folder",
+                key: "f:" + folder.name,
+                node: folder,
+            })),
+            ...node.stacks.map((stack) => ({
+                type: "stack",
+                key: "s:" + stack.name,
+                stack,
+            })),
+        ];
+        const position = new Map((order[node.path] ?? []).map((key, index) => [ key, index ]));
+        // Stable sort: ordered items first (in their order), then the others in the default order
+        node.items = defaultItems
+            .map((item, index) => ({
+                item,
+                index,
+            }))
+            .sort((a, b) => {
+                const pa = position.has(a.item.key) ? position.get(a.item.key) : Infinity;
+                const pb = position.has(b.item.key) ? position.get(b.item.key) : Infinity;
+                if (pa !== pb) {
+                    return pa - pb;
+                }
+                return a.index - b.index;
+            })
+            .map(({ item }) => item);
+        node.folders.forEach(sortNode);
     };
-    sortFolders(root);
+    sortNode(root);
+    root.byPath = byPath;
     return root;
 }
 
@@ -279,6 +302,12 @@ export default {
         FolderNameInput,
         DragDropProvider,
     },
+    provide() {
+        return {
+            // Where the dragged item would land: { id: droppable id, zone: "before" | "after" | "into" }
+            sidebarDropHint: this.dropHint,
+        };
+    },
     props: {
         /** Should the scrollbar be shown */
         scrollbar: {
@@ -301,6 +330,10 @@ export default {
             closedAgents: new Map(),
             openGroups: loadOpenGroups(),
             dragging: false,
+            dropHint: reactive({
+                id: null,
+                zone: null,
+            }),
             // Inline folder name editor: { endpoint, parent, mode: "create" | "rename", path, initial }
             folderEdit: null,
             // A drag starts after moving the pointer 6px, so a click still opens the stack
@@ -432,7 +465,8 @@ export default {
                 tree: buildFolderTree(
                     stacks.filter(stack => stack.isManagedByDockge),
                     // Stored folders (also empty ones); hidden while searching unless they match
-                    (this.$root.folderLists[endpoint] ?? []).filter(folder => this.searchText === "" || folder.toLowerCase().includes(this.searchText.toLowerCase()))
+                    (this.$root.folderLists[endpoint] ?? []).filter(folder => this.searchText === "" || folder.toLowerCase().includes(this.searchText.toLowerCase())),
+                    this.$root.folderOrders[endpoint] ?? {}
                 ),
                 unmanaged: stacks.filter(stack => !stack.isManagedByDockge && !isTrueNASApp(stack)),
                 truenasApps: stacks.filter(stack => !stack.isManagedByDockge && isTrueNASApp(stack)),
@@ -563,50 +597,117 @@ export default {
         },
 
         /**
-         * End of a drag & drop (dnd-kit): move a stack or a folder into the folder it was dropped on
+         * While dragging: decide where the item would land, from the pointer position on the target.
+         * Folder header: upper quarter = before, lower quarter = after, middle = into the folder.
+         * Stack: upper half = before, lower half = after. Top level zone: into.
+         * @param {object} _event dnd-kit drag move event
+         * @param {object} manager dnd-kit manager
+         * @returns {void}
+         */
+        onDragMove(event, manager) {
+            const operation = manager?.dragOperation;
+            const target = operation?.target;
+            // The pointer event is more up to date than operation.position (updated once per frame)
+            const y = event?.nativeEvent?.clientY ?? operation?.position?.current?.y;
+            const zone = this.dropZone(target, y);
+            this.dropHint.id = zone ? target.id : null;
+            this.dropHint.zone = zone;
+        },
+
+        /**
+         * @param {object} target dnd-kit droppable
+         * @param {number} y Pointer position
+         * @returns {string|null} "before" | "after" | "into", null if there is no target
+         */
+        dropZone(target, y) {
+            const element = target?.element;
+            if (!element || y === undefined || y === null) {
+                return null;
+            }
+            const data = target.data ?? {};
+            if (data.itemType === "root") {
+                return "into";
+            }
+            const rect = element.getBoundingClientRect();
+            const ratio = (y - rect.top) / Math.max(1, rect.height);
+            if (data.itemType === "folder") {
+                return ratio < 0.25 ? "before" : ratio > 0.75 ? "after" : "into";
+            }
+            return ratio < 0.5 ? "before" : "after";
+        },
+
+        /**
+         * End of a drag & drop (dnd-kit): move the stack / folder before, after or into the target,
+         * and save the new order of the destination folder
          * @param {object} event dnd-kit drag end event
          * @returns {void}
          */
         onDragEnd(event) {
+            const targetEntity = event.operation.target;
+            // Where the pointer was released (the hint shown while dragging can be one frame late)
+            const zone = this.dropZone(targetEntity, event.nativeEvent?.clientY ?? event.operation.position?.current?.y) ?? this.dropHint.zone;
             this.dragging = false;
+            this.dropHint.id = null;
+            this.dropHint.zone = null;
+
             if (event.canceled) {
                 return;
             }
             const source = event.operation.source?.data;
-            const target = event.operation.target?.data;
-            if (!source || !target || target.kind !== "folder") {
+            const target = targetEntity?.data;
+            if (!source || !target || !zone) {
                 return;
             }
             if (source.endpoint !== target.endpoint) {
                 this.$root.toastError(this.$t("moveAcrossInstances"));
                 return;
             }
-            const endpoint = source.endpoint === "current" ? "" : source.endpoint;
-            const done = (res) => {
+
+            const sourceKey = source.kind === "stack" ? "s:" + source.name : "f:" + source.path.split("/").pop();
+            let toParent;
+            let refKey = null;
+            if (zone === "into") {
+                toParent = target.itemType === "root" ? "" : target.path;
+            } else {
+                toParent = target.parent;
+                refKey = target.key;
+            }
+
+            if (source.kind === "folder") {
+                // A folder cannot go into itself or into one of its sub folders
+                if (toParent === source.path || toParent.startsWith(source.path + "/")) {
+                    return;
+                }
+            }
+            if (refKey === sourceKey && toParent === (source.kind === "stack" ? source.folder : source.path.split("/").slice(0, -1).join("/"))) {
+                return;
+            }
+
+            // New order of the destination folder, as currently displayed
+            const agent = this.agentStackList.find((item) => item.endpoint === source.endpoint);
+            const parentNode = agent?.tree.byPath.get(toParent);
+            const keys = (parentNode?.items ?? []).map((item) => item.key).filter((key) => key !== sourceKey);
+            if (refKey === null) {
+                keys.push(sourceKey);
+            } else {
+                const index = keys.indexOf(refKey);
+                keys.splice(index === -1 ? keys.length : (zone === "before" ? index : index + 1), 0, sourceKey);
+            }
+
+            const item = source.kind === "stack" ? {
+                kind: "stack",
+                name: source.name,
+            } : {
+                kind: "folder",
+                path: source.path,
+            };
+
+            this.openFolderPath(source.endpoint, toParent);
+            this.$root.emitAgent(source.endpoint === "current" ? "" : source.endpoint, "moveSidebarItem", item, toParent, keys, (res) => {
                 if (!res.ok) {
                     this.$root.toastRes(res);
                 }
-            };
-
-            if (source.kind === "stack") {
-                if (source.folder === target.path) {
-                    return;
-                }
-                this.openFolderPath(source.endpoint, target.path);
-                this.$root.emitAgent(endpoint, "setStackFolder", source.name, target.path, done);
-            } else if (source.kind === "folder") {
-                // Dropped on itself or inside itself
-                if (target.path === source.path || target.path.startsWith(source.path + "/")) {
-                    return;
-                }
-                const name = source.path.split("/").pop();
-                const newPath = target.path ? target.path + "/" + name : name;
-                if (newPath === source.path) {
-                    return;
-                }
-                this.openFolderPath(source.endpoint, target.path);
-                this.$root.emitAgent(endpoint, "renameStackFolder", source.path, newPath, done);
-            }
+            });
         },
 
         /**
@@ -634,8 +735,14 @@ export default {
             }
         },
 
+        /** A new folder is being named inside "parent" */
         isEditingFolder(endpoint, parent) {
-            return this.folderEdit !== null && this.folderEdit.endpoint === endpoint && this.folderEdit.parent === parent;
+            return this.folderEdit !== null && this.folderEdit.mode === "create" && this.folderEdit.endpoint === endpoint && this.folderEdit.parent === parent;
+        },
+
+        /** Folder being renamed (edited on its own row) */
+        renamingPath(endpoint) {
+            return this.folderEdit !== null && this.folderEdit.mode === "rename" && this.folderEdit.endpoint === endpoint ? this.folderEdit.path : "";
         },
 
         startCreateFolder(endpoint, parent) {

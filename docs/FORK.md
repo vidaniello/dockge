@@ -15,6 +15,8 @@ L'immagine è pubblicata da GitHub Actions su `ghcr.io/vidaniello/dockge` (tag `
 
 - Il pulsante con la cartella accanto alla ricerca crea una cartella; passando sopra una cartella compaiono "nuova sottocartella", "rinomina" ed "elimina" (solo se vuota).
 - Trascina uno stack su una cartella per spostarlo, oppure una cartella su un'altra per annidarla. Mentre trascini, in fondo alla lista compare la zona "primo livello".
+- L'ordine si decide trascinando: sulla metà alta o bassa di uno stack lo metti prima o dopo; su una cartella, il quarto alto o basso la mette prima o dopo, il centro sposta dentro. Una linea blu mostra dove finirà. Di default l'ordine è alfabetico (cartelle, poi stack); l'ordine scelto è salvato nel database.
+- La rinomina di una cartella si fa sulla sua riga.
 - Le cartelle possono restare vuote: l'elenco è salvato nel database di Dockge, la cartella di ogni stack nel suo compose (`x-dockge.folder`). Sul disco gli stack non si spostano.
 - Le stesse operazioni sono disponibili nelle API (`list_folders`, `create_folder`, `move_folder`, `delete_folder`, `set_stack_folder`).
 

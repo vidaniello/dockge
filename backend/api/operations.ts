@@ -8,7 +8,10 @@ import { listDirectory } from "../file-browser";
 import { getHostIPs } from "../host-ips";
 import { ApiPermission } from "./api-keys";
 import packageJSON from "../../package.json";
-import { addFolders, deleteFolder, getStoredFolders, renameStoredFolders, validateFolder } from "../stack-folders";
+import {
+    addFolders, deleteFolder, deleteFolderOrder, getStoredFolders, removeFromOrder, renameFolderInOrder, renameStackInOrder, renameStoredFolders,
+    validateFolder
+} from "../stack-folders";
 
 /**
  * The operations offered by the external API.
@@ -403,7 +406,11 @@ export const operations : Operation[] = [
         required: [ "name", "newName" ],
         handler: async (args, server) => {
             const stack = await getManagedStack(server, args.name);
+            const folder = stack.folder;
             const result = await runWithOutput(stack, () => stack.rename(undefined, String(args.newName ?? ""), args.keepVolumes !== false));
+            if (result.ok) {
+                await renameStackInOrder(folder, stack.name, String(args.newName));
+            }
             server.sendStackList();
             return {
                 ...result,
@@ -431,6 +438,9 @@ export const operations : Operation[] = [
             const oldFolder = stack.folder;
             await stack.setFolder(String(args.folder ?? ""));
             await addFolders(oldFolder, validateFolder(String(args.folder ?? "")));
+            if (oldFolder !== validateFolder(String(args.folder ?? ""))) {
+                await removeFromOrder(oldFolder, "s:" + stack.name);
+            }
             server.sendStackList();
             return {
                 ok: true,
@@ -537,6 +547,7 @@ export const operations : Operation[] = [
                 }
             }
             await renameStoredFolders(from, to);
+            await renameFolderInOrder(from, to);
             server.sendStackList();
             return {
                 ok: true,
@@ -562,6 +573,7 @@ export const operations : Operation[] = [
             const folder = validateFolder(String(args.folder ?? ""));
             const list = await Stack.getStackList(server);
             await deleteFolder(folder, [ ...list.values() ]);
+            await deleteFolderOrder(folder);
             server.sendStackList();
             return {
                 ok: true,

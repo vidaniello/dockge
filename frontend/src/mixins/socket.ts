@@ -37,6 +37,8 @@ export default defineComponent({
             allAgentStackList: {} as Record<string, object>,
             // Virtual folders of the sidebar (also the empty ones) of this instance
             stackFolders: [] as string[],
+            // Manual order of the sidebar: folder path => ["f:name" | "s:name"]
+            stackFolderOrder: {} as Record<string, string[]>,
 
             // online / offline / connecting
             agentStatusList: {
@@ -81,6 +83,20 @@ export default defineComponent({
             };
             for (const endpoint in this.allAgentStackList) {
                 result[endpoint] = (this.allAgentStackList[endpoint] as { folders? : string[] }).folders ?? [];
+            }
+            return result;
+        },
+
+        /**
+         * Manual sidebar order per endpoint ("current" for this instance)
+         * @returns {object} endpoint => order
+         */
+        folderOrders() : Record<string, Record<string, string[]>> {
+            const result : Record<string, Record<string, string[]>> = {
+                current: this.stackFolderOrder,
+            };
+            for (const endpoint in this.allAgentStackList) {
+                result[endpoint] = (this.allAgentStackList[endpoint] as { folderOrder? : Record<string, string[]> }).folderOrder ?? {};
             }
             return result;
         },
@@ -276,15 +292,18 @@ export default defineComponent({
                     if (!res.endpoint) {
                         this.stackList = res.stackList;
                         this.stackFolders = res.folders ?? [];
+                        this.stackFolderOrder = res.folderOrder ?? {};
                     } else {
                         if (!this.allAgentStackList[res.endpoint]) {
                             this.allAgentStackList[res.endpoint] = {
                                 stackList: {},
                                 folders: [],
+                                folderOrder: {},
                             };
                         }
                         this.allAgentStackList[res.endpoint].stackList = res.stackList;
                         this.allAgentStackList[res.endpoint].folders = res.folders ?? [];
+                        this.allAgentStackList[res.endpoint].folderOrder = res.folderOrder ?? {};
                     }
                 }
             });
