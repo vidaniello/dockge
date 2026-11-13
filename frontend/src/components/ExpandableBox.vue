@@ -194,7 +194,8 @@ export default {
         position: fixed;
         inset: 0;
         margin: 0 !important;
-        z-index: 1060;
+        // Above the sticky header (1030), below Bootstrap modals (backdrop 1050, modal 1055) such as the path picker
+        z-index: 1045;
         padding: 12px 16px 16px;
         background-color: #fff;
 

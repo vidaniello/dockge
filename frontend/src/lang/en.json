@@ -177,7 +177,7 @@
     "moveToFolder": "Move to folder",
     "folder": "Folder",
     "folderHelp": "Use / for sub folders, leave empty for no folder. Folders only exist in Dockge (saved as x-dockge.folder in compose.yaml): the stack does not move on disk.",
-    "noFolder": "Drop here: no folder",
+    "noFolder": "Drop here: top level",
     "renameFolder": "Rename / move folder",
     "renameFolderPrompt": "New folder path (use / for sub folders, empty = no folder):",
     "imageUpdates": "Image updates",
@@ -227,5 +227,14 @@
     "days": "days",
     "copy": "Copy",
     "copied": "Copied",
-    "Name": "Name"
+    "Name": "Name",
+    "showValues": "Show values",
+    "hideValues": "Hide values",
+    "newFolder": "New folder",
+    "newSubfolder": "New subfolder",
+    "newFolderPlaceholder": "Folder name (/ for sub folders)",
+    "deleteFolder": "Delete folder",
+    "deleteFolderConfirm": "Delete the folder \"{0}\" and its empty sub folders?",
+    "emptyFolder": "Empty — drag stacks or folders here",
+    "moveAcrossInstances": "Stacks and folders cannot be moved to another Dockge instance"
 }

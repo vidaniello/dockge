@@ -10,7 +10,14 @@
                     {{ $t("Select") }}
                 </button>
 
-                <div class="placeholder"></div>
+                <button
+                    type="button"
+                    class="btn btn-sm btn-normal new-folder-btn"
+                    :title="$t('newFolder')"
+                    @click="startCreateFolder('current', '')"
+                >
+                    <font-awesome-icon icon="folder-plus" />
+                </button>
                 <div class="search-wrapper">
                     <a v-if="searchText == ''" class="search-icon">
                         <font-awesome-icon icon="search" />
@@ -47,90 +54,104 @@
                 </span>
             </div>
         </div>
-        <div ref="stackList" class="stack-list" :class="{ scrollbar: scrollbar }" :style="stackListStyle" @dragstart="onDragStart" @dragend="dragging = false">
-            <div v-if="agentStackList[0] && agentStackList[0].stacks.length === 0" class="text-center mt-3">
-                <router-link to="/compose">{{ $t("addFirstStackMsg") }}</router-link>
-            </div>
-            <div v-for="(agent, agentIndex) in agentStackList" :key="agentIndex" class="stack-list-inner">
-                <div
-                    v-if="$root.agentCount > 1" class="p-2 agent-select"
-                    @click="closedAgents.set(agent.endpoint, !closedAgents.get(agent.endpoint))"
-                >
-                    <span class="me-1">
-                        <font-awesome-icon v-show="closedAgents.get(agent.endpoint)" icon="chevron-circle-right" />
-                        <font-awesome-icon v-show="!closedAgents.get(agent.endpoint)" icon="chevron-circle-down" />
-                    </span>
-                    <span v-if="agent.endpoint === 'current'">{{ $t("currentEndpoint") }}</span>
-                    <span v-else>{{ agent.endpoint }}</span>
+        <DragDropProvider :sensors="sensors" @drag-start="dragging = true" @drag-end="onDragEnd">
+            <div ref="stackList" class="stack-list" :class="{ scrollbar: scrollbar }" :style="stackListStyle">
+                <div v-if="agentStackList[0] && agentStackList[0].stacks.length === 0" class="text-center mt-3">
+                    <router-link to="/compose">{{ $t("addFirstStackMsg") }}</router-link>
                 </div>
-                <div v-show="$root.agentCount === 1 || !closedAgents.get(agent.endpoint)">
-                    <!-- Virtual folders (x-dockge.folder) -->
-                    <StackFolder
-                        v-for="folder in agent.tree.folders"
-                        :key="folder.path"
-                        :node="folder"
-                        :endpoint="agent.endpoint"
-                        :is-open="(path) => isFolderOpen(agent.endpoint, path)"
-                        :item-props="itemProps"
-                        @toggle="toggleFolder(agent.endpoint, $event)"
-                        @move-stack="moveStack"
-                        @rename-folder="renameFolder(agent.endpoint, $event)"
-                    />
-
-                    <!-- Stacks managed by Dockge, not in a folder -->
-                    <StackListItem
-                        v-for="item in agent.tree.stacks"
-                        :key="item.name" :stack="item" :isSelectMode="selectMode"
-                        :isSelected="isSelected" :select="select" :deselect="deselect"
-                    />
-
-                    <!-- While dragging a stack (shown below the list, so nothing moves under the mouse): drop here to take it out of its folder -->
+                <div v-for="(agent, agentIndex) in agentStackList" :key="agentIndex" class="stack-list-inner">
                     <div
-                        v-if="dragging"
-                        class="root-drop-zone"
-                        :class="{ 'drop-target': rootDropActive === agent.endpoint }"
-                        @dragover="onRootDragOver($event, agent.endpoint)"
-                        @dragleave="rootDropActive = null"
-                        @drop="onRootDrop($event, agent.endpoint)"
+                        v-if="$root.agentCount > 1" class="p-2 agent-select"
+                        @click="closedAgents.set(agent.endpoint, !closedAgents.get(agent.endpoint))"
                     >
-                        {{ $t("noFolder") }}
+                        <span class="me-1">
+                            <font-awesome-icon v-show="closedAgents.get(agent.endpoint)" icon="chevron-circle-right" />
+                            <font-awesome-icon v-show="!closedAgents.get(agent.endpoint)" icon="chevron-circle-down" />
+                        </span>
+                        <span v-if="agent.endpoint === 'current'">{{ $t("currentEndpoint") }}</span>
+                        <span v-else>{{ agent.endpoint }}</span>
                     </div>
+                    <div v-show="$root.agentCount === 1 || !closedAgents.get(agent.endpoint)">
+                        <!-- New top level folder -->
+                        <FolderNameInput
+                            v-if="isEditingFolder(agent.endpoint, '')"
+                            :initial="folderEdit.initial"
+                            :placeholder="$t('newFolderPlaceholder')"
+                            @submit="submitFolderEdit"
+                            @cancel="folderEdit = null"
+                        />
 
-                    <!-- Stacks not managed by Dockge (e.g. started from another folder or by another tool) -->
-                    <div v-if="agent.unmanaged.length > 0 || agent.truenasApps.length > 0" class="stack-group">
-                        <div class="group-header" @click="toggleGroup(agent.endpoint, 'unmanaged')">
-                            <font-awesome-icon class="me-2 chevron" :class="{ open: isGroupOpen(agent.endpoint, 'unmanaged') }" icon="chevron-right" />
-                            <font-awesome-icon class="me-2" icon="box-archive" />
-                            <span class="group-name">{{ $t("unmanagedStacks") }}</span>
-                            <span class="badge rounded-pill group-count">{{ agent.unmanaged.length + agent.truenasApps.length }}</span>
-                        </div>
-                        <div v-show="isGroupOpen(agent.endpoint, 'unmanaged')">
-                            <StackListItem
-                                v-for="item in agent.unmanaged"
-                                :key="item.name" :stack="item" :depth="1" :isSelectMode="selectMode"
-                                :isSelected="isSelected" :select="select" :deselect="deselect"
-                            />
+                        <!-- Virtual folders (x-dockge.folder + empty folders); drag & drop with dnd-kit -->
+                        <StackFolder
+                            v-for="folder in agent.tree.folders"
+                            :key="folder.path"
+                            :node="folder"
+                            :endpoint="agent.endpoint"
+                            :is-open="(path) => isFolderOpen(agent.endpoint, path)"
+                            :item-props="itemProps"
+                            @toggle="toggleFolder(agent.endpoint, $event)"
+                            @new-folder="startCreateFolder(agent.endpoint, $event)"
+                            @rename-folder="startRenameFolder(agent.endpoint, $event)"
+                            @delete-folder="deleteFolder(agent.endpoint, $event)"
+                        >
+                            <template #before-children="{ path }">
+                                <FolderNameInput
+                                    v-if="isEditingFolder(agent.endpoint, path)"
+                                    :initial="folderEdit.initial"
+                                    :depth="path.split('/').length"
+                                    :placeholder="$t('newFolderPlaceholder')"
+                                    @submit="submitFolderEdit"
+                                    @cancel="folderEdit = null"
+                                />
+                            </template>
+                        </StackFolder>
 
-                            <!-- TrueNAS SCALE apps are compose projects named "ix-<app>" -->
-                            <div v-if="agent.truenasApps.length > 0" class="stack-group">
-                                <div class="group-header sub" @click="toggleGroup(agent.endpoint, 'truenas')">
-                                    <font-awesome-icon class="me-2 chevron" :class="{ open: isGroupOpen(agent.endpoint, 'truenas') }" icon="chevron-right" />
-                                    <span class="group-name">{{ $t("truenasApps") }}</span>
-                                    <span class="badge rounded-pill group-count">{{ agent.truenasApps.length }}</span>
-                                </div>
-                                <div v-show="isGroupOpen(agent.endpoint, 'truenas')">
-                                    <StackListItem
-                                        v-for="item in agent.truenasApps"
-                                        :key="item.name" :stack="item" :depth="2" :isSelectMode="selectMode"
-                                        :isSelected="isSelected" :select="select" :deselect="deselect"
-                                    />
+                        <!-- Stacks managed by Dockge, not in a folder -->
+                        <StackListItem
+                            v-for="item in agent.tree.stacks"
+                            :key="item.name" :stack="item" :isSelectMode="selectMode"
+                            :isSelected="isSelected" :select="select" :deselect="deselect"
+                        />
+
+                        <!-- While dragging (below the list, so nothing moves under the pointer): drop here for the top level -->
+                        <StackRootDropZone v-if="dragging" :endpoint="agent.endpoint" />
+
+                        <!-- Stacks not managed by Dockge (e.g. started from another folder or by another tool) -->
+                        <div v-if="agent.unmanaged.length > 0 || agent.truenasApps.length > 0" class="stack-group">
+                            <div class="group-header" @click="toggleGroup(agent.endpoint, 'unmanaged')">
+                                <font-awesome-icon class="me-2 chevron" :class="{ open: isGroupOpen(agent.endpoint, 'unmanaged') }" icon="chevron-right" />
+                                <font-awesome-icon class="me-2" icon="box-archive" />
+                                <span class="group-name">{{ $t("unmanagedStacks") }}</span>
+                                <span class="badge rounded-pill group-count">{{ agent.unmanaged.length + agent.truenasApps.length }}</span>
+                            </div>
+                            <div v-show="isGroupOpen(agent.endpoint, 'unmanaged')">
+                                <StackListItem
+                                    v-for="item in agent.unmanaged"
+                                    :key="item.name" :stack="item" :depth="1" :isSelectMode="selectMode"
+                                    :isSelected="isSelected" :select="select" :deselect="deselect"
+                                />
+
+                                <!-- TrueNAS SCALE apps are compose projects named "ix-<app>" -->
+                                <div v-if="agent.truenasApps.length > 0" class="stack-group">
+                                    <div class="group-header sub" @click="toggleGroup(agent.endpoint, 'truenas')">
+                                        <font-awesome-icon class="me-2 chevron" :class="{ open: isGroupOpen(agent.endpoint, 'truenas') }" icon="chevron-right" />
+                                        <span class="group-name">{{ $t("truenasApps") }}</span>
+                                        <span class="badge rounded-pill group-count">{{ agent.truenasApps.length }}</span>
+                                    </div>
+                                    <div v-show="isGroupOpen(agent.endpoint, 'truenas')">
+                                        <StackListItem
+                                            v-for="item in agent.truenasApps"
+                                            :key="item.name" :stack="item" :depth="2" :isSelectMode="selectMode"
+                                            :isSelected="isSelected" :select="select" :deselect="deselect"
+                                        />
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
-        </div>
+        </DragDropProvider>
     </div>
 
     <Confirm ref="confirmPause" :yes-text="$t('Yes')" :no-text="$t('No')" @yes="pauseSelected">
@@ -141,7 +162,11 @@
 <script>
 import Confirm from "../components/Confirm.vue";
 import StackListItem from "../components/StackListItem.vue";
-import StackFolder, { DRAG_TYPE } from "../components/StackFolder.vue";
+import StackFolder from "../components/StackFolder.vue";
+import StackRootDropZone from "../components/StackRootDropZone.vue";
+import FolderNameInput from "../components/FolderNameInput.vue";
+import { DragDropProvider, KeyboardSensor, PointerSensor } from "@dnd-kit/vue";
+import { PointerActivationConstraints } from "@dnd-kit/dom";
 import { CREATED_FILE, CREATED_STACK, EXITED, RUNNING, UNKNOWN } from "../../../common/util-common";
 
 const OPEN_GROUPS_KEY = "dockge.sidebar.openGroups";
@@ -160,7 +185,7 @@ function isTrueNASApp(stack) {
  * @param {object[]} stacks Sorted stacks
  * @returns {object} Root node { folders, stacks }
  */
-function buildFolderTree(stacks) {
+function buildFolderTree(stacks, extraFolders = []) {
     const root = {
         name: "",
         path: "",
@@ -169,6 +194,33 @@ function buildFolderTree(stacks) {
         count: 0,
         children: new Map(),
     };
+
+    const ensure = (folder) => {
+        let node = root;
+        let currentPath = "";
+        for (const part of folder.split("/")) {
+            currentPath = currentPath ? currentPath + "/" + part : part;
+            if (!node.children.has(part)) {
+                const child = {
+                    name: part,
+                    path: currentPath,
+                    folders: [],
+                    stacks: [],
+                    count: 0,
+                    children: new Map(),
+                };
+                node.children.set(part, child);
+                node.folders.push(child);
+            }
+            node = node.children.get(part);
+        }
+        return node;
+    };
+
+    // Empty folders first, so they exist even without stacks
+    for (const folder of extraFolders) {
+        ensure(folder);
+    }
 
     for (const stack of stacks) {
         let node = root;
@@ -223,6 +275,9 @@ export default {
         Confirm,
         StackListItem,
         StackFolder,
+        StackRootDropZone,
+        FolderNameInput,
+        DragDropProvider,
     },
     props: {
         /** Should the scrollbar be shown */
@@ -246,7 +301,15 @@ export default {
             closedAgents: new Map(),
             openGroups: loadOpenGroups(),
             dragging: false,
-            rootDropActive: null,
+            // Inline folder name editor: { endpoint, parent, mode: "create" | "rename", path, initial }
+            folderEdit: null,
+            // A drag starts after moving the pointer 6px, so a click still opens the stack
+            sensors: [
+                PointerSensor.configure({
+                    activationConstraints: () => [ new PointerActivationConstraints.Distance({ value: 6 }) ],
+                }),
+                KeyboardSensor,
+            ],
         };
     },
     computed: {
@@ -366,7 +429,11 @@ export default {
                 endpoint,
                 stacks,
                 managed: stacks.filter(stack => stack.isManagedByDockge),
-                tree: buildFolderTree(stacks.filter(stack => stack.isManagedByDockge)),
+                tree: buildFolderTree(
+                    stacks.filter(stack => stack.isManagedByDockge),
+                    // Stored folders (also empty ones); hidden while searching unless they match
+                    (this.$root.folderLists[endpoint] ?? []).filter(folder => this.searchText === "" || folder.toLowerCase().includes(this.searchText.toLowerCase()))
+                ),
                 unmanaged: stacks.filter(stack => !stack.isManagedByDockge && !isTrueNASApp(stack)),
                 truenasApps: stacks.filter(stack => !stack.isManagedByDockge && isTrueNASApp(stack)),
             })).sort((a, b) => {
@@ -496,55 +563,138 @@ export default {
         },
 
         /**
-         * Move a stack (dropped on a folder) to that folder
-         * @param {object} data { name, endpoint } of the dragged stack
-         * @param {string} folder Target folder, "" for none
+         * End of a drag & drop (dnd-kit): move a stack or a folder into the folder it was dropped on
+         * @param {object} event dnd-kit drag end event
          * @returns {void}
          */
-        moveStack(data, folder) {
+        onDragEnd(event) {
             this.dragging = false;
-            this.$root.emitAgent(data.endpoint || "", "setStackFolder", data.name, folder, (res) => {
+            if (event.canceled) {
+                return;
+            }
+            const source = event.operation.source?.data;
+            const target = event.operation.target?.data;
+            if (!source || !target || target.kind !== "folder") {
+                return;
+            }
+            if (source.endpoint !== target.endpoint) {
+                this.$root.toastError(this.$t("moveAcrossInstances"));
+                return;
+            }
+            const endpoint = source.endpoint === "current" ? "" : source.endpoint;
+            const done = (res) => {
                 if (!res.ok) {
                     this.$root.toastRes(res);
                 }
-            });
-        },
+            };
 
-        onDragStart() {
-            // Changing the DOM synchronously in dragstart can cancel the drag in Chrome
-            setTimeout(() => {
-                this.dragging = true;
-            }, 0);
-        },
-
-        onRootDragOver(e, endpoint) {
-            if (e.dataTransfer?.types.includes(DRAG_TYPE)) {
-                e.preventDefault();
-                this.rootDropActive = endpoint;
-            }
-        },
-
-        onRootDrop(e, endpoint) {
-            this.rootDropActive = null;
-            const raw = e.dataTransfer?.getData(DRAG_TYPE);
-            if (raw) {
-                e.preventDefault();
-                this.moveStack(JSON.parse(raw), "");
+            if (source.kind === "stack") {
+                if (source.folder === target.path) {
+                    return;
+                }
+                this.openFolderPath(source.endpoint, target.path);
+                this.$root.emitAgent(endpoint, "setStackFolder", source.name, target.path, done);
+            } else if (source.kind === "folder") {
+                // Dropped on itself or inside itself
+                if (target.path === source.path || target.path.startsWith(source.path + "/")) {
+                    return;
+                }
+                const name = source.path.split("/").pop();
+                const newPath = target.path ? target.path + "/" + name : name;
+                if (newPath === source.path) {
+                    return;
+                }
+                this.openFolderPath(source.endpoint, target.path);
+                this.$root.emitAgent(endpoint, "renameStackFolder", source.path, newPath, done);
             }
         },
 
         /**
-         * Rename or move a folder (e.g. "media/arr" -> "arr" or "apps/media/arr")
-         * @param {string} endpoint Endpoint of the list ("current" for this instance)
+         * Expand a folder and its parents (so a moved item stays visible)
+         * @param {string} endpoint Endpoint
          * @param {string} path Folder path
          * @returns {void}
          */
-        renameFolder(endpoint, path) {
-            const newPath = window.prompt(this.$t("renameFolderPrompt"), path);
-            if (newPath === null || newPath.trim() === path) {
+        openFolderPath(endpoint, path) {
+            if (!path) {
                 return;
             }
-            this.$root.emitAgent(endpoint === "current" ? "" : endpoint, "renameStackFolder", path, newPath, (res) => {
+            const parts = path.split("/");
+            for (let i = 1; i <= parts.length; i++) {
+                this.openGroups[endpoint + "|folder:" + parts.slice(0, i).join("/")] = true;
+            }
+            this.saveOpenGroups();
+        },
+
+        saveOpenGroups() {
+            try {
+                window.localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify(this.openGroups));
+            } catch (e) {
+                // ignore
+            }
+        },
+
+        isEditingFolder(endpoint, parent) {
+            return this.folderEdit !== null && this.folderEdit.endpoint === endpoint && this.folderEdit.parent === parent;
+        },
+
+        startCreateFolder(endpoint, parent) {
+            if (this.$root.agentCount > 1 && endpoint === "current" && parent === "") {
+                // Several instances: the header button creates the folder in this instance
+                this.closedAgents.set("current", false);
+            }
+            this.openFolderPath(endpoint, parent);
+            this.folderEdit = {
+                endpoint,
+                parent,
+                mode: "create",
+                path: "",
+                initial: "",
+            };
+        },
+
+        startRenameFolder(endpoint, path) {
+            const parts = path.split("/");
+            this.folderEdit = {
+                endpoint,
+                parent: parts.slice(0, -1).join("/"),
+                mode: "rename",
+                path,
+                initial: parts[parts.length - 1],
+            };
+        },
+
+        /**
+         * Create or rename the folder typed in the inline editor
+         * @param {string} name Name typed by the user ("/" allowed to create several levels)
+         * @returns {void}
+         */
+        submitFolderEdit(name) {
+            const edit = this.folderEdit;
+            this.folderEdit = null;
+            if (!edit) {
+                return;
+            }
+            const endpoint = edit.endpoint === "current" ? "" : edit.endpoint;
+            const newPath = edit.parent ? edit.parent + "/" + name : name;
+            const done = (res) => {
+                if (!res.ok) {
+                    this.$root.toastRes(res);
+                }
+            };
+            if (edit.mode === "create") {
+                this.openFolderPath(edit.endpoint, newPath);
+                this.$root.emitAgent(endpoint, "createStackFolder", newPath, done);
+            } else {
+                this.$root.emitAgent(endpoint, "renameStackFolder", edit.path, newPath, done);
+            }
+        },
+
+        deleteFolder(endpoint, path) {
+            if (!confirm(this.$t("deleteFolderConfirm", [ path ]))) {
+                return;
+            }
+            this.$root.emitAgent(endpoint === "current" ? "" : endpoint, "deleteStackFolder", path, (res) => {
                 if (!res.ok) {
                     this.$root.toastRes(res);
                 }

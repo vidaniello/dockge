@@ -30,6 +30,7 @@ import { Stack } from "./stack";
 import { Cron } from "croner";
 import { imageUpdateChecker } from "./image-update-checker";
 import { createApiRouter } from "./api/api-router";
+import { getStoredFolders } from "./stack-folders";
 import gracefulShutdown from "http-graceful-shutdown";
 import User from "./models/user";
 import childProcessAsync from "promisify-child-process";
@@ -707,6 +708,7 @@ export class DockgeServer {
                 dockgeSocket.emitAgent("stackList", {
                     ok: true,
                     stackList: Object.fromEntries(map),
+                    folders: await getStoredFolders(),
                 });
             }
         }

@@ -8,6 +8,7 @@ import { listDirectory } from "../file-browser";
 import { getHostIPs } from "../host-ips";
 import { ApiPermission } from "./api-keys";
 import packageJSON from "../../package.json";
+import { addFolders, deleteFolder, getStoredFolders, renameStoredFolders, validateFolder } from "../stack-folders";
 
 /**
  * The operations offered by the external API.
@@ -427,7 +428,140 @@ export const operations : Operation[] = [
         required: [ "name", "folder" ],
         handler: async (args, server) => {
             const stack = await getManagedStack(server, args.name);
+            const oldFolder = stack.folder;
             await stack.setFolder(String(args.folder ?? ""));
+            await addFolders(oldFolder, validateFolder(String(args.folder ?? "")));
+            server.sendStackList();
+            return {
+                ok: true,
+            };
+        },
+    },
+    {
+        id: "list_folders",
+        method: "get",
+        path: "/folders",
+        summary: "Virtual folders of the Dockge sidebar (including empty ones) with the stacks inside each",
+        tag: "Folders",
+        permission: "read",
+        readOnly: true,
+        params: {},
+        handler: async (_args, server) => {
+            const list = await Stack.getStackList(server, true);
+            const folders = new Map<string, string[]>();
+            const ensure = (folder : string) => {
+                const parts = folder.split("/");
+                for (let i = 1; i <= parts.length; i++) {
+                    const path = parts.slice(0, i).join("/");
+                    if (!folders.has(path)) {
+                        folders.set(path, []);
+                    }
+                }
+            };
+            for (const folder of await getStoredFolders()) {
+                ensure(folder);
+            }
+            for (const stack of list.values()) {
+                if (stack.isManagedByDockge && stack.folder) {
+                    ensure(stack.folder);
+                    folders.get(stack.folder)?.push(stack.name);
+                }
+            }
+            return [ ...folders.entries() ].sort(([ a ], [ b ]) => a.localeCompare(b)).map(([ path, stacks ]) => ({
+                path,
+                stacks,
+            }));
+        },
+    },
+    {
+        id: "create_folder",
+        method: "post",
+        path: "/folders",
+        summary: "Create a virtual folder (can stay empty), e.g. media/arr",
+        tag: "Folders",
+        permission: "write",
+        params: {
+            folder: {
+                type: "string",
+                description: "Folder path, use / for sub folders",
+            },
+        },
+        required: [ "folder" ],
+        handler: async (args, server) => {
+            const folder = validateFolder(String(args.folder ?? ""));
+            if (!folder) {
+                throw new ValidationError("The folder name is empty");
+            }
+            await addFolders(folder);
+            server.sendStackList();
+            return {
+                ok: true,
+                folder,
+            };
+        },
+    },
+    {
+        id: "move_folder",
+        method: "post",
+        path: "/folders/move",
+        summary: "Rename or move a folder with everything inside (e.g. media -> apps/media)",
+        tag: "Folders",
+        permission: "write",
+        params: {
+            from: {
+                type: "string",
+                description: "Current folder path",
+            },
+            to: {
+                type: "string",
+                description: "New folder path (\"\" moves its content to the top level)",
+            },
+        },
+        required: [ "from", "to" ],
+        handler: async (args, server) => {
+            const from = validateFolder(String(args.from ?? ""));
+            const to = validateFolder(String(args.to ?? ""));
+            if (!from) {
+                throw new ValidationError("Invalid folder");
+            }
+            if (to === from || to.startsWith(from + "/")) {
+                throw new ValidationError("A folder cannot be moved inside itself");
+            }
+            const list = await Stack.getStackList(server);
+            let count = 0;
+            for (const stack of list.values()) {
+                const folder = stack.isManagedByDockge ? stack.folder : "";
+                if (folder && (folder === from || folder.startsWith(from + "/"))) {
+                    await stack.setFolder(to + folder.slice(from.length));
+                    count++;
+                }
+            }
+            await renameStoredFolders(from, to);
+            server.sendStackList();
+            return {
+                ok: true,
+                movedStacks: count,
+            };
+        },
+    },
+    {
+        id: "delete_folder",
+        method: "delete",
+        path: "/folders",
+        summary: "Delete an empty folder and its empty sub folders (stacks are never deleted: move them out first)",
+        tag: "Folders",
+        permission: "write",
+        params: {
+            folder: {
+                type: "string",
+                description: "Folder path",
+            },
+        },
+        required: [ "folder" ],
+        handler: async (args, server) => {
+            const folder = validateFolder(String(args.folder ?? ""));
+            const list = await Stack.getStackList(server);
+            await deleteFolder(folder, [ ...list.values() ]);
             server.sendStackList();
             return {
                 ok: true,

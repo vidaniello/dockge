@@ -141,7 +141,7 @@
     "moveToFolder": "Sposta in cartella",
     "folder": "Cartella",
     "folderHelp": "Usa / per le sottocartelle, lascia vuoto per nessuna cartella. Le cartelle esistono solo in Dockge (salvate come x-dockge.folder nel compose.yaml): lo stack non si sposta sul disco.",
-    "noFolder": "Rilascia qui: nessuna cartella",
+    "noFolder": "Rilascia qui: primo livello",
     "renameFolder": "Rinomina / sposta cartella",
     "renameFolderPrompt": "Nuovo percorso della cartella (usa / per le sottocartelle, vuoto = nessuna cartella):",
     "imageUpdates": "Aggiornamenti immagini",
@@ -191,5 +191,14 @@
     "days": "giorni",
     "copy": "Copia",
     "copied": "Copiato",
-    "Name": "Nome"
+    "Name": "Nome",
+    "showValues": "Mostra valori",
+    "hideValues": "Nascondi valori",
+    "newFolder": "Nuova cartella",
+    "newSubfolder": "Nuova sottocartella",
+    "newFolderPlaceholder": "Nome cartella (/ per le sottocartelle)",
+    "deleteFolder": "Elimina cartella",
+    "deleteFolderConfirm": "Eliminare la cartella \"{0}\" e le sue sottocartelle vuote?",
+    "emptyFolder": "Vuota — trascina qui stack o cartelle",
+    "moveAcrossInstances": "Stack e cartelle non si possono spostare in un'altra istanza di Dockge"
 }

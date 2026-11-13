@@ -5,6 +5,7 @@ import { Stack } from "../stack";
 import { AgentSocket } from "../../common/agent-socket";
 import { listDirectory } from "../file-browser";
 import { getHostIPs } from "../host-ips";
+import { addFolders, deleteFolder, renameStoredFolders, validateFolder } from "../stack-folders";
 import { imageUpdateChecker } from "../image-update-checker";
 import { log } from "../log";
 
@@ -271,7 +272,10 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 }
 
                 const stack = await Stack.getStack(server, stackName);
+                const oldFolder = stack.folder;
                 await stack.setFolder(folder);
+                // Both folders stay in the sidebar even if they become empty
+                await addFolders(oldFolder, validateFolder(folder));
                 server.sendStackList();
 
                 callbackResult({
@@ -301,6 +305,7 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 if (to === from || to.startsWith(from + "/")) {
                     throw new ValidationError("A folder cannot be moved inside itself");
                 }
+                validateFolder(to);
 
                 const stackList = await Stack.getStackList(server);
                 let count = 0;
@@ -315,11 +320,52 @@ export class DockerSocketHandler extends AgentSocketHandler {
                         count++;
                     }
                 }
+                await renameStoredFolders(from, to);
 
                 server.sendStackList();
                 callbackResult({
                     ok: true,
                     count,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Create an (empty) folder in the sidebar
+        agentSocket.on("createStackFolder", async (folder : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (typeof(folder) !== "string") {
+                    throw new ValidationError("Folder must be a string");
+                }
+                const normalized = validateFolder(folder);
+                if (!normalized) {
+                    throw new ValidationError("The folder name is empty");
+                }
+                await addFolders(normalized);
+                server.sendStackList();
+                callbackResult({
+                    ok: true,
+                    folder: normalized,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Delete an empty folder (and its empty sub folders)
+        agentSocket.on("deleteStackFolder", async (folder : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (typeof(folder) !== "string" || !Stack.normalizeFolder(folder)) {
+                    throw new ValidationError("Invalid folder");
+                }
+                const stackList = await Stack.getStackList(server);
+                await deleteFolder(Stack.normalizeFolder(folder), [ ...stackList.values() ]);
+                server.sendStackList();
+                callbackResult({
+                    ok: true,
                 }, callback);
             } catch (e) {
                 callbackError(e, callback);
