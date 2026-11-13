@@ -31,6 +31,7 @@ import { Cron } from "croner";
 import { imageUpdateChecker } from "./image-update-checker";
 import { createApiRouter } from "./api/api-router";
 import { getSidebarOrder, getStoredFolders } from "./stack-folders";
+import { dockerApiGet } from "./docker-api";
 import gracefulShutdown from "http-graceful-shutdown";
 import User from "./models/user";
 import childProcessAsync from "promisify-child-process";
@@ -716,15 +717,24 @@ export class DockgeServer {
     }
 
     async getDockerNetworkList() : Promise<string[]> {
-        let res = await childProcessAsync.spawn("docker", [ "network", "ls", "--format", "{{.Name}}" ], {
-            encoding: "utf-8",
-        });
+        let list : string[];
+        try {
+            // Docker API first: "docker network ls" (CLI 29) fails on daemons that have a network whose gateway
+            // includes its prefix length, e.g. ParseAddr("fd86:dd34:ddc5:d::1/64") on TrueNAS SCALE
+            const networks = await dockerApiGet<{ Name : string }[]>("/networks");
+            list = networks.map((network) => network.Name);
+        } catch (e) {
+            log.debug("server", "Docker API not available for the network list, using the CLI: " + (e instanceof Error ? e.message : e));
+            let res = await childProcessAsync.spawn("docker", [ "network", "ls", "--format", "{{.Name}}" ], {
+                encoding: "utf-8",
+            });
 
-        if (!res.stdout) {
-            return [];
+            if (!res.stdout) {
+                return [];
+            }
+
+            list = res.stdout.toString().split("\n");
         }
-
-        let list = res.stdout.toString().split("\n");
 
         // Remove empty string item
         list = list.filter((item) => {

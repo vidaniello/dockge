@@ -7,6 +7,7 @@ import { Settings } from "./settings";
 import { Stack } from "./stack";
 import { DockgeServer } from "./dockge-server";
 import { LooseObject } from "../common/util-common";
+import { apiName, dockerApiGet } from "./docker-api";
 
 /**
  * Checks whether newer versions of the images used by the stacks are available, without pulling anything.
@@ -238,12 +239,37 @@ async function dockerJSON(args : string[], cwd? : string) : Promise<string> {
  * @param imageIdOrRef Image ID or reference
  */
 async function getLocalDigests(imageIdOrRef : string) : Promise<string[]> {
+    let list : string[] | null = null;
     try {
-        const out = await dockerJSON([ "image", "inspect", "--format", "{{json .RepoDigests}}", imageIdOrRef ]);
-        const list = JSON.parse(out.trim() || "[]") as string[] | null;
-        return (list ?? []).map((item) => item.slice(item.indexOf("@") + 1));
+        // Docker API first (the docker CLI 29 can fail on some daemons, see docker-api.ts)
+        const image = await dockerApiGet<{ RepoDigests? : string[] | null }>(`/images/${apiName(imageIdOrRef)}/json`);
+        list = image.RepoDigests ?? [];
     } catch (e) {
-        return [];
+        try {
+            const out = await dockerJSON([ "image", "inspect", "--format", "{{json .RepoDigests}}", imageIdOrRef ]);
+            list = JSON.parse(out.trim() || "[]") as string[] | null;
+        } catch (e2) {
+            return [];
+        }
+    }
+    return (list ?? []).map((item) => item.slice(item.indexOf("@") + 1));
+}
+
+/**
+ * Image ID used by a container
+ * @param name Container name
+ */
+async function getContainerImageId(name : string) : Promise<string | undefined> {
+    try {
+        const container = await dockerApiGet<{ Image? : string }>(`/containers/${apiName(name)}/json`);
+        return container.Image;
+    } catch (e) {
+        try {
+            const out = await dockerJSON([ "inspect", "--format", "{{.Image}}", name ]);
+            return out.trim() || undefined;
+        } catch (e2) {
+            return undefined;
+        }
     }
 }
 
@@ -408,17 +434,13 @@ class ImageUpdateChecker {
                 const parsed = JSON.parse(line);
                 Array.isArray(parsed) ? containers.push(...parsed) : containers.push(parsed);
             }
-            if (containers.length > 0) {
-                const inspectOut = await dockerJSON([ "inspect", "--format", "{{.Name}} {{.Image}}", ...containers.map((c) => c.Name) ]);
-                const imageByName = new Map(inspectOut.trim().split("\n").map((line) => {
-                    const [ name, image ] = line.trim().split(" ");
-                    return [ name.replace(/^\//, ""), image ];
-                }));
-                for (const container of containers) {
-                    const image = imageByName.get(container.Name);
-                    if (image && !containerImage.has(container.Service)) {
-                        containerImage.set(container.Service, image);
-                    }
+            for (const container of containers) {
+                if (containerImage.has(container.Service)) {
+                    continue;
+                }
+                const image = await getContainerImageId(container.Name);
+                if (image) {
+                    containerImage.set(container.Service, image);
                 }
             }
         } catch (e) {
