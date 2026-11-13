@@ -325,10 +325,37 @@ function copyYAMLCommentsItems(items: any, srcItems: any) {
  * @param input
  * @param hostname
  */
-export function parseDockerPort(input : string, hostname : string) {
+/**
+ * A port of compose.yaml can be a string ("8080:80"), a number (80) or the long syntax
+ * ({ target: 80, published: 8080, host_ip: "1.2.3.4", protocol: "udp" }): convert it to the short syntax
+ * @param input Port
+ */
+export function portToString(input : unknown) : string {
+    if (input === null || input === undefined) {
+        return "";
+    }
+    if (typeof(input) === "object") {
+        const port = input as LooseObject;
+        let text = String(port.target ?? "");
+        if (port.published !== undefined && port.published !== null && port.published !== "") {
+            text = `${port.published}:${text}`;
+            if (port.host_ip) {
+                text = `${String(port.host_ip).includes(":") ? `[${port.host_ip}]` : port.host_ip}:${text}`;
+            }
+        }
+        if (port.protocol) {
+            text += `/${port.protocol}`;
+        }
+        return text;
+    }
+    return String(input);
+}
+
+export function parseDockerPort(rawInput : unknown, hostname : string) {
     let port;
     let display;
 
+    const input = portToString(rawInput);
     const parts = input.split("/");
     let part1 = parts[0];
     let protocol = parts[1] || "tcp";
