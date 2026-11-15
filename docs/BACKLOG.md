@@ -87,12 +87,31 @@ Oggi dalle API/MCP c'è solo `exec_in_service` (`backend/api/operations.ts`): es
 - Non interattivo: un comando, una risposta. Limite di dimensione dell'output come gli altri strumenti (`limitOutput`).
 - Collegato ai punti 4 (file dello stack via API) e 5 (Console).
 
-## 8. Chiavi API: sistemare la grafica della chiave appena creata
+## 8. Riquadri di avviso (`.alert`) a forma di pillola
 
-Dopo "Crea chiave", in Impostazioni → Chiavi API, il riquadro con la chiave ("Copia la chiave adesso: non verrà più mostrata") è brutto: ha la forma di una pillola/ovale, è azzurro pieno e non segue lo stile delle altre schede della pagina.
+Il riquadro con la chiave API appena creata (Impostazioni → Chiavi API, "Copia la chiave adesso: non verrà più mostrata") ha la forma di un ovale, è azzurro pieno e non segue lo stile delle altre schede. Non è l'unico caso: lo stesso problema riguarda tutti gli avvisi `.alert` dell'interfaccia.
 
-- Dove: `frontend/src/components/settings/ApiKeys.vue`, blocco `<div v-if="newKey" class="alert alert-success">`.
-- Causa probabile: `$border-radius: 50rem` in `frontend/src/styles/vars.scss` (pensato per i pulsanti a pillola) vale anche per gli `.alert` di Bootstrap, che diventano ovali; `.alert-success` in `main.scss` usa `$primary` (azzurro) come sfondo.
-- Proposta: usare una scheda come le altre (`shadow-box big-padding`) con bordo o titolo di avviso, angoli normali, e la chiave in un campo monospazio con pulsante "Copia" accanto; stessa larghezza delle altre sezioni.
-- Controllare anche il tema scuro, l'esempio di configurazione MCP (`<details>`) e la vista da telefono.
-- Verificare se altri `.alert` nell'interfaccia hanno lo stesso problema degli angoli.
+**Causa**: in `frontend/src/styles/vars.scss` c'è `$border-radius: 50rem` (pensato per pulsanti e campi a pillola). Bootstrap 5.3 lo usa per molti componenti tramite `--bs-border-radius`, compresi gli `.alert`: con una riga sola diventano una pillola, con più righe un ovale che taglia il testo agli angoli.
+
+**Controllo fatto** (CSS reale compilato da `main.scss`, tema chiaro e scuro):
+
+| Dove | Riquadro | Risultato |
+|---|---|---|
+| `components/settings/ApiKeys.vue` (chiave nuova) | `alert alert-success` | ovale azzurro, pulsanti e testo che sfiorano il bordo curvo |
+| `pages/Compose.vue` (finestra "Rinomina stack") | `alert alert-warning` | ovale, il testo su 3 righe tocca gli angoli |
+| `components/PathPicker.vue` (scelta cartella dell'host) | `alert alert-danger py-2`, `alert alert-warning` | pillola; quello su 2 righe è ovale |
+| `components/Login.vue` (credenziali errate) | `alert alert-danger` | pillola |
+| `components/settings/About.vue` (versione frontend/backend diversa) | `alert alert-warning` | pillola (stesso stile, non visto a schermo) |
+| `pages/Console.vue` ("Console non attiva") | `alert alert-warning shadow-box` | **ok**: `.shadow-box` rimette gli angoli a 10px |
+
+Altri componenti che usano lo stesso raggio ma sono già corretti: `.list-group` (ridefinito a 0.75rem in `main.scss`), `.modal-content` (1rem), `.dropdown-menu` (0.5rem), campi e pulsanti (pillola voluta), textarea (angoli arrotondati ma accettabili).
+
+**Problemi in più nel tema scuro**:
+- gli avvisi restano chiari (giallo, rosa, azzurro): non esiste una variante scura per `.alert-warning` / `.alert-danger` / `.alert-success`;
+- il testo in `<code>` dentro gli avvisi usa il colore chiaro del tema scuro sullo sfondo chiaro e quasi non si legge (es. `DOCKGE_ENABLE_CONSOLE=true` nella pagina Console, la chiave API nel riquadro della chiave nuova).
+
+**Proposta**:
+- in `main.scss` dare a `.alert` un raggio fisso (es. `border-radius: 10px`, come `.shadow-box`), oppure impostare `$alert-border-radius` prima dell'import di Bootstrap; non cambiare `$border-radius` globale, altrimenti cambiano anche pulsanti e campi;
+- riquadro della chiave API: usarlo come le altre schede (`shadow-box big-padding`) con bordo o titolo di avviso, la chiave in un campo monospazio con "Copia" accanto;
+- colori degli avvisi nel tema scuro (sfondo scuro con bordo colorato) e colore del `<code>` leggibile dentro gli avvisi;
+- ricontrollare dopo la modifica le pagine della tabella, anche da telefono.
