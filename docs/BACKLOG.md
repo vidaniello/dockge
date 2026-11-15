@@ -86,3 +86,13 @@ Oggi dalle API/MCP c'è solo `exec_in_service` (`backend/api/operations.ts`): es
 - **Variante senza stack**: un comando nella cartella degli stack (`/opt/stacks`), come la Console generale.
 - Non interattivo: un comando, una risposta. Limite di dimensione dell'output come gli altri strumenti (`limitOutput`).
 - Collegato ai punti 4 (file dello stack via API) e 5 (Console).
+
+## 8. Chiavi API: sistemare la grafica della chiave appena creata
+
+Dopo "Crea chiave", in Impostazioni → Chiavi API, il riquadro con la chiave ("Copia la chiave adesso: non verrà più mostrata") è brutto: ha la forma di una pillola/ovale, è azzurro pieno e non segue lo stile delle altre schede della pagina.
+
+- Dove: `frontend/src/components/settings/ApiKeys.vue`, blocco `<div v-if="newKey" class="alert alert-success">`.
+- Causa probabile: `$border-radius: 50rem` in `frontend/src/styles/vars.scss` (pensato per i pulsanti a pillola) vale anche per gli `.alert` di Bootstrap, che diventano ovali; `.alert-success` in `main.scss` usa `$primary` (azzurro) come sfondo.
+- Proposta: usare una scheda come le altre (`shadow-box big-padding`) con bordo o titolo di avviso, angoli normali, e la chiave in un campo monospazio con pulsante "Copia" accanto; stessa larghezza delle altre sezioni.
+- Controllare anche il tema scuro, l'esempio di configurazione MCP (`<details>`) e la vista da telefono.
+- Verificare se altri `.alert` nell'interfaccia hanno lo stesso problema degli angoli.
