@@ -115,3 +115,21 @@ Altri componenti che usano lo stesso raggio ma sono già corretti: `.list-group`
 - riquadro della chiave API: usarlo come le altre schede (`shadow-box big-padding`) con bordo o titolo di avviso, la chiave in un campo monospazio con "Copia" accanto;
 - colori degli avvisi nel tema scuro (sfondo scuro con bordo colorato) e colore del `<code>` leggibile dentro gli avvisi;
 - ricontrollare dopo la modifica le pagine della tabella, anche da telefono.
+
+## 9. Chiavi API: indirizzo pubblico delle API dietro un reverse proxy
+
+Con le API dietro un reverse proxy HTTPS (es. Nginx Proxy Manager, con un nome dedicato come `dockge-api.test.trexon` che punta alla porta `DOCKGE_API_PORT` del container), il pannello Impostazioni → Chiavi API mostra un indirizzo sbagliato: `https://dockge.test.trexon:5002` invece di `https://dockge-api.test.trexon`.
+
+- **Perché**: in `frontend/src/components/settings/ApiKeys.vue` (computed `baseURL`) l'indirizzo è costruito nel browser con il nome con cui si è aperto Dockge + `DOCKGE_API_PORT`. Dockge non può sapere con quale nome e porta le API si raggiungono dall'esterno. Sono sbagliati gli indirizzi REST, OpenAPI e MCP e l'esempio di configurazione per il client MCP.
+- **Lato server va già bene** (verificato in `backend/api/api-router.ts` e `backend/dockge-server.ts`):
+  - HTTPS riconosciuto con `X-Forwarded-Proto: https` se il proxy è in `DOCKGE_TRUST_PROXY`;
+  - IP del client da `X-Forwarded-For` (blocco dopo 10 tentativi falliti);
+  - nessun controllo su `Host` / `Origin`, quindi un nome diverso funziona;
+  - `openapi.json` ha `servers: [{ url: "/api/v1" }]`, relativo, valido con qualsiasi dominio.
+- **Proposta**:
+  - variabile `DOCKGE_API_PUBLIC_URL` (es. `https://dockge-api.test.trexon`) e/o campo "Indirizzo pubblico delle API" nel pannello, salvato nelle impostazioni (la variabile, se presente, ha la precedenza e il campo è in sola lettura);
+  - il backend la restituisce in `getApiKeyList` (`config.publicUrl`, in `backend/socket-handlers/main-socket-handler.ts`); il pannello la usa per REST, OpenAPI, MCP e l'esempio MCP;
+  - mostrare anche l'indirizzo interno (porta del container) come informazione, e un avviso se c'è un proxy fidato ma nessun indirizzo pubblico impostato;
+  - validare l'indirizzo (solo `https://`, salvo `DOCKGE_API_ALLOW_HTTP=true`; niente percorso finale `/api/v1` o `/mcp`);
+  - aggiornare la tabella delle variabili e la sezione sul reverse proxy in `docs/FORK.md`.
+- Valutare lo stesso per l'interfaccia web senza porta dedicata (API su `/api` e `/mcp` della porta principale): lì `location.origin` va già bene se si apre Dockge dal nome pubblico.
