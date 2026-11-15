@@ -76,3 +76,13 @@ L'immagine usata è `ghcr.io/vidaniello/dockge:latest` e in Impostazioni → Inf
     ```bash
     docker image inspect ghcr.io/vidaniello/dockge:latest --format '{{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "org.opencontainers.image.created"}}'
     ```
+
+## 7. API / MCP: eseguire comandi nella cartella di uno stack
+
+Oggi dalle API/MCP c'è solo `exec_in_service` (`backend/api/operations.ts`): esegue un comando dentro il container di un servizio, che deve essere avviato. Non si può eseguire un comando nella shell di Dockge (quella della Console), per esempio per lanciare `docker ...` o lavorare sui file di uno stack con i servizi fermi.
+
+- **Nuovo strumento** (es. `exec_in_stack_dir`, `POST /stacks/:name/exec`): esegue un comando con `sh -c` / `bash -c` nel container di Dockge, partendo dalla cartella dello stack. Parametri come `exec_in_service`: `command`, `shell`, `timeoutSeconds`; risposta con `exitCode`, `stdout`, `stderr`, `timedOut`.
+- **Sicurezza**: attivo solo con `DOCKGE_ENABLE_CONSOLE=true` (altrimenti lo strumento non compare né in REST né in MCP), chiave API con permesso di scrittura, segnato come `destructive`. Equivale all'accesso root all'host, come la Console.
+- **Variante senza stack**: un comando nella cartella degli stack (`/opt/stacks`), come la Console generale.
+- Non interattivo: un comando, una risposta. Limite di dimensione dell'output come gli altri strumenti (`limitOutput`).
+- Collegato ai punti 4 (file dello stack via API) e 5 (Console).
