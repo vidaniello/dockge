@@ -9,6 +9,8 @@ Questo fork aggiunge a Dockge:
 - avvisi sulle immagini aggiornabili;
 - API REST + endpoint MCP per script e assistenti AI, con chiavi API.
 
+In progettazione: dataset ZFS per stack e volumi, vedi [ZFS-DESIGN.md](ZFS-DESIGN.md).
+
 L'immagine è pubblicata da GitHub Actions su `ghcr.io/vidaniello/dockge` (tag `latest` da `master`, `1.2.3` dai tag `v1.2.3`).
 
 ## Cartelle della barra laterale
