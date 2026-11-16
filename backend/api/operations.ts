@@ -391,7 +391,7 @@ export const operations : Operation[] = [
         id: "rename_stack",
         method: "post",
         path: "/stacks/:name/rename",
-        summary: "Rename a stack (stops it, renames its folder, starts it again if it was running)",
+        summary: "Rename a stack (stops it, renames its folder, starts it again if it was running). Absolute bind mounts into the stack folder are rewritten as relative paths; bind sources with variables are left as they are and listed in warnings.",
         tag: "Stacks",
         permission: "write",
         params: {
@@ -407,7 +407,10 @@ export const operations : Operation[] = [
         handler: async (args, server) => {
             const stack = await getManagedStack(server, args.name);
             const folder = stack.folder;
-            const result = await runWithOutput(stack, () => stack.rename(undefined, String(args.newName ?? ""), args.keepVolumes !== false));
+            let warnings : string[] = [];
+            const result = await runWithOutput(stack, async () => {
+                ({ warnings } = await stack.rename(undefined, String(args.newName ?? ""), args.keepVolumes !== false));
+            });
             if (result.ok) {
                 await renameStackInOrder(folder, stack.name, String(args.newName));
             }
@@ -415,6 +418,7 @@ export const operations : Operation[] = [
             return {
                 ...result,
                 name: result.ok ? args.newName : args.name,
+                warnings,
             };
         },
     },

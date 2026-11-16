@@ -1,4 +1,4 @@
-import yaml, { isMap, isScalar, Pair, YAMLMap } from "yaml";
+import yaml, { isMap, isScalar, isSeq, Pair, Scalar, YAMLMap } from "yaml";
 
 /**
  * Small, surgical edits of a YAML file that keep everything else byte for byte
@@ -44,12 +44,17 @@ function findPair(map : YAMLMap, key : string) : Pair | undefined {
 }
 
 /**
- * Set a string value at path (e.g. ["x-dockge", "folder"]), creating the missing maps.
+ * Set a string value at path (e.g. ["x-dockge", "folder"] or ["services", "app", "volumes", 0]),
+ * creating the missing maps. Numbers in the path are sequence indexes: an existing item can be replaced,
+ * but missing sequence items are never created.
  */
 export function setStringIn(content : string, path : Path, value : string) : string {
     let result : string | undefined;
     try {
-        result = textSetStringIn(content, path, value);
+        result = textReplaceScalar(content, path, value);
+        if (result === undefined && !path.some((key) => typeof key === "number")) {
+            result = textSetStringIn(content, path, value);
+        }
     } catch (e) {
         result = undefined;
     }
@@ -61,7 +66,8 @@ export function setStringIn(content : string, path : Path, value : string) : str
         // Turn empty or scalar intermediate values ("data:") into maps
         for (let i = 1; i < path.length; i++) {
             const prefix = path.slice(0, i);
-            if (!isMap(doc.getIn(prefix, true))) {
+            const node = doc.getIn(prefix, true);
+            if (!isMap(node) && !isSeq(node)) {
                 doc.setIn(prefix, doc.createNode({}));
             }
         }
@@ -105,6 +111,44 @@ function fallback(content : string, edit : (doc : yaml.Document) => void) : stri
     const doc = yaml.parseDocument(content);
     edit(doc);
     return doc.toString({ lineWidth: 0 });
+}
+
+/**
+ * Replace an existing, non empty scalar at path (inside block or flow maps and sequences),
+ * keeping its quoting style when the new value allows it.
+ */
+function textReplaceScalar(content : string, path : Path, value : string) : string | undefined {
+    const doc = yaml.parseDocument(content, { keepSourceTokens: true });
+    if (doc.errors.length > 0) {
+        return undefined;
+    }
+    const node = doc.getIn(path, true);
+    if (!isScalar(node) || !node.range || isEmptyValue(node)) {
+        return undefined;
+    }
+
+    // The whole document must be unchanged except for this value
+    const expectedDoc = yaml.parseDocument(content);
+    expectedDoc.setIn(path, value);
+    const expected = JSON.stringify(expectedDoc.toJS());
+
+    const [ start, end ] = node.range;
+    const candidates : string[] = [];
+    if (node.type === Scalar.PLAIN || node.type === undefined) {
+        candidates.push(value);
+    } else if (node.type === Scalar.QUOTE_SINGLE) {
+        candidates.push("'" + value.replace(/'/g, "''") + "'");
+    }
+    candidates.push(JSON.stringify(value));
+
+    for (const candidate of candidates) {
+        const result = content.slice(0, start) + candidate + content.slice(end);
+        const resultDoc = yaml.parseDocument(result);
+        if (resultDoc.errors.length === 0 && JSON.stringify(resultDoc.toJS()) === expected) {
+            return result;
+        }
+    }
+    return undefined;
 }
 
 function textSetStringIn(content : string, path : Path, value : string) : string | undefined {

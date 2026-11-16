@@ -440,8 +440,9 @@ export class DockerSocketHandler extends AgentSocketHandler {
 
                 const stack = await Stack.getStack(server, stackName);
                 const folder = stack.folder;
+                let warnings : string[];
                 try {
-                    await stack.rename(socket, newName, keepVolumes === true);
+                    ({ warnings } = await stack.rename(socket, newName, keepVolumes === true));
                     await renameStackInOrder(folder, stackName, newName);
                 } finally {
                     server.sendStackList();
@@ -451,6 +452,7 @@ export class DockerSocketHandler extends AgentSocketHandler {
                     ok: true,
                     msg: "Renamed",
                     msgi18n: true,
+                    warnings,
                 }, callback);
             } catch (e) {
                 callbackError(e, callback);
@@ -470,6 +472,7 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 callbackResult({
                     ok: true,
                     volumes: stack.getProjectScopedVolumes(),
+                    bindMounts: stack.getBindMountsInStackFolder(),
                 }, callback);
             } catch (e) {
                 callbackError(e, callback);

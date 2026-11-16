@@ -346,6 +346,24 @@
                         <label class="form-check-label" for="rename-keep-volumes">{{ $t("renameStackKeepVolumes") }}</label>
                     </div>
                 </div>
+
+                <div v-if="renameBindRewrites.length > 0" class="mt-3">
+                    <p class="mb-2">{{ $t("renameStackBindsRewritten") }}</p>
+                    <ul class="mb-0">
+                        <li v-for="bind in renameBindRewrites" :key="bind.path.join('/')">
+                            <code>{{ bind.from }}</code> &rarr; <code>{{ bind.to }}</code> ({{ bind.service }})
+                        </li>
+                    </ul>
+                </div>
+
+                <div v-if="renameBindSkipped.length > 0" class="alert alert-danger mt-3 mb-0">
+                    <p class="mb-2">{{ $t("renameStackBindsVariables") }}</p>
+                    <ul class="mb-0">
+                        <li v-for="bind in renameBindSkipped" :key="bind.service + bind.source">
+                            <code>{{ bind.source }}</code> ({{ bind.service }})
+                        </li>
+                    </ul>
+                </div>
             </BModal>
 
             <!-- Delete Dialog -->
@@ -381,6 +399,8 @@ import ExpandableBox from "../components/ExpandableBox.vue";
 import PathPicker from "../components/PathPicker.vue";
 import dotenv from "dotenv";
 import { ref } from "vue";
+import { useToast } from "vue-toastification";
+const toast = useToast();
 
 const template = `
 services:
@@ -471,6 +491,8 @@ export default {
             renameNewName: "",
             renameVolumes: [],
             renameKeepVolumes: true,
+            renameBindRewrites: [],
+            renameBindSkipped: [],
         };
     },
     computed: {
@@ -967,11 +989,15 @@ export default {
             this.renameNewName = this.stack.name;
             this.renameVolumes = [];
             this.renameKeepVolumes = true;
+            this.renameBindRewrites = [];
+            this.renameBindSkipped = [];
             this.showRenameDialog = true;
 
             this.$root.emitAgent(this.endpoint, "getProjectScopedVolumes", this.stack.name, (res) => {
                 if (res.ok) {
                     this.renameVolumes = res.volumes;
+                    this.renameBindRewrites = res.bindMounts?.rewrites ?? [];
+                    this.renameBindSkipped = res.bindMounts?.skipped ?? [];
                 }
             });
         },
@@ -988,6 +1014,9 @@ export default {
                 this.$root.toastRes(res);
 
                 if (res.ok) {
+                    for (const warning of res.warnings ?? []) {
+                        toast.warning(warning, { timeout: false });
+                    }
                     if (this.endpoint) {
                         this.$router.push(`/compose/${newName}/${this.endpoint}`);
                     } else {
