@@ -56,18 +56,82 @@
             </table>
 
             <div v-if="!status.zfs" class="alert alert-secondary">{{ $t("storageNotZfs") }}</div>
-            <div v-else-if="status.ready" class="alert alert-success">{{ $t("storageReady") }}</div>
+            <div v-else-if="status.canCreate" class="alert alert-success">{{ $t("storageCanCreate", [ status.providerUser ]) }}</div>
+            <div v-else-if="status.ready" class="alert alert-secondary">{{ $t("storageReady") }}</div>
 
-            <div v-for="problem in status.problems" :key="problem.code" class="alert" :class="problem.severity === 'error' ? 'alert-danger' : 'alert-warning'">
+            <div v-for="problem in status.problems" :key="problem.code" class="alert" :class="problemClass(problem)">
                 <div class="fw-bold mb-1">{{ problemText(problem, "storageProblem") }}</div>
                 <div class="remedy">{{ problemText(problem, "storageRemedy") }}</div>
                 <pre v-if="problem.code === 'mountPropagationPrivate'" class="mt-2 mb-0 snippet">{{ propagationSnippet }}</pre>
+                <template v-if="problem.code === 'truenasCertificate' && problem.params.fingerprint">
+                    <div class="mt-2 small">{{ $t("truenasFingerprint") }}</div>
+                    <code class="fingerprint">{{ problem.params.fingerprint }}</code>
+                    <div class="mt-2">
+                        <button class="btn btn-sm btn-primary" :disabled="saving" @click="save({ truenasFingerprint: problem.params.fingerprint })">
+                            {{ $t("truenasTrustCertificate") }}
+                        </button>
+                    </div>
+                </template>
             </div>
 
-            <div class="form-text">{{ $t("storageReadOnlyNote") }}</div>
+            <!-- TrueNAS API -->
+            <template v-if="status.zfs && status.stacksIsDatasetRoot && settings">
+                <h5 class="mt-4 mb-3">{{ $t("truenasApi") }}</h5>
+                <div class="mb-3">
+                    <label class="form-label" for="truenas-url">{{ $t("truenasUrl") }}</label>
+                    <input id="truenas-url" v-model="form.truenasUrl" class="form-control" placeholder="wss://192.168.1.10/api/current" autocomplete="off" />
+                    <div class="form-text">{{ $t("truenasUrlHint") }}</div>
+                </div>
+                <div class="row g-3 mb-3">
+                    <div class="col-md-5">
+                        <label class="form-label" for="truenas-user">{{ $t("truenasUser") }}</label>
+                        <input id="truenas-user" v-model="form.truenasUsername" class="form-control" placeholder="dockge" autocomplete="off" />
+                    </div>
+                    <div class="col-md-7">
+                        <label class="form-label" for="truenas-key">{{ $t("truenasApiKey") }}</label>
+                        <input
+                            id="truenas-key"
+                            v-model="form.truenasApiKey"
+                            type="password"
+                            class="form-control"
+                            :placeholder="settings.truenasApiKeySet ? $t('truenasApiKeySaved') : ''"
+                            autocomplete="new-password"
+                        />
+                    </div>
+                </div>
+                <div class="form-text mb-3">{{ $t("truenasRolesHint") }}</div>
+                <div v-if="settings.truenasFingerprint" class="mb-3 small">
+                    {{ $t("truenasTrustedFingerprint") }} <code class="fingerprint">{{ settings.truenasFingerprint }}</code>
+                    <button class="btn btn-sm btn-link" :disabled="saving" @click="save({ truenasFingerprint: '' })">{{ $t("truenasForgetFingerprint") }}</button>
+                </div>
+                <div class="d-flex gap-2 flex-wrap">
+                    <button class="btn btn-primary btn-sm" :disabled="saving" @click="saveConnection">
+                        {{ $t("truenasSaveAndTest") }}
+                    </button>
+                    <button v-if="settings.truenasApiKeySet" class="btn btn-normal btn-sm" :disabled="saving" @click="save({ truenasApiKey: null })">
+                        {{ $t("truenasRemoveKey") }}
+                    </button>
+                </div>
+
+                <!-- Behaviour -->
+                <h5 class="mt-4 mb-3">{{ $t("zfsBehaviour") }}</h5>
+                <div class="form-check mb-3">
+                    <input id="new-stacks-dataset" v-model="form.newStacksAsDatasets" class="form-check-input" type="checkbox" :disabled="saving" @change="save({ newStacksAsDatasets: form.newStacksAsDatasets })">
+                    <label class="form-check-label" for="new-stacks-dataset">{{ $t("zfsNewStacksAsDatasets") }}</label>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="missing-volumes">{{ $t("zfsMissingVolumes") }}</label>
+                    <select id="missing-volumes" v-model="form.missingVolumes" class="form-select" :disabled="saving" @change="save({ missingVolumes: form.missingVolumes })">
+                        <option value="ask">{{ $t("zfsMissingVolumesAsk") }}</option>
+                        <option value="dataset">{{ $t("zfsMissingVolumesDataset") }}</option>
+                        <option value="directory">{{ $t("zfsMissingVolumesDirectory") }}</option>
+                    </select>
+                    <div class="form-text">{{ $t("zfsMissingVolumesHint") }}</div>
+                </div>
+            </template>
         </template>
 
-        <button class="btn btn-normal btn-sm mt-3" :disabled="loading" @click="load">
+        <button class="btn btn-normal btn-sm mt-3" :disabled="loading" @click="load(true)">
             <font-awesome-icon icon="arrows-rotate" class="me-1" />
             {{ $t("storageRefresh") }}
         </button>
@@ -84,6 +148,15 @@ export default {
             loading: false,
             error: "",
             status: null,
+            settings: null,
+            saving: false,
+            form: {
+                truenasUrl: "",
+                truenasUsername: "",
+                truenasApiKey: "",
+                newStacksAsDatasets: true,
+                missingVolumes: "ask",
+            },
         };
     },
     computed: {
@@ -107,15 +180,67 @@ export default {
             return storageProblemText(this.$t, this.$te, problem, prefix);
         },
 
-        load() {
+        problemClass(problem) {
+            if (problem.severity === "error") {
+                return "alert-danger";
+            }
+            return problem.severity === "info" ? "alert-secondary" : "alert-warning";
+        },
+
+        /**
+         * @param {boolean} refresh Connect to TrueNAS again instead of using the cached check
+         * @returns {void}
+         */
+        load(refresh = false) {
             this.loading = true;
             this.error = "";
-            this.$root.emitAgent(this.endpoint, "getStorageStatus", (res) => {
+            this.$root.emitAgent(this.endpoint, "getStorageStatus", { refresh }, (res) => {
                 this.loading = false;
                 if (res.ok) {
                     this.status = res.status;
                 } else {
                     this.error = res.msg;
+                }
+            });
+            this.$root.emitAgent(this.endpoint, "getZfsSettings", (res) => {
+                if (res.ok) {
+                    this.applySettings(res.settings);
+                }
+            });
+        },
+
+        applySettings(settings) {
+            this.settings = settings;
+            this.form = {
+                truenasUrl: settings.truenasUrl,
+                truenasUsername: settings.truenasUsername,
+                truenasApiKey: "",
+                newStacksAsDatasets: settings.newStacksAsDatasets,
+                missingVolumes: settings.missingVolumes,
+            };
+        },
+
+        saveConnection() {
+            this.save({
+                truenasUrl: this.form.truenasUrl,
+                truenasUsername: this.form.truenasUsername,
+                truenasApiKey: this.form.truenasApiKey,
+            });
+        },
+
+        /**
+         * Save some settings; the answer contains the storage status checked again
+         * @param {object} changes Settings to change
+         * @returns {void}
+         */
+        save(changes) {
+            this.saving = true;
+            this.$root.emitAgent(this.endpoint, "setZfsSettings", changes, (res) => {
+                this.saving = false;
+                this.$root.toastRes(res);
+                if (res.ok) {
+                    this.applySettings(res.settings);
+                    this.status = res.status;
                 }
             });
         },
@@ -146,6 +271,10 @@ export default {
 // The global $border-radius turns multi-line alerts into ovals (see docs/BACKLOG.md, 8)
 .alert {
     border-radius: 10px;
+}
+
+.fingerprint {
+    word-break: break-all;
 }
 
 .remedy {

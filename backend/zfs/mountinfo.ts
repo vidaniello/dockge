@@ -155,3 +155,10 @@ export function getSpace(target : string) : { available : number, total : number
         return null;
     }
 }
+
+/**
+ * Mounts at a path or below it
+ */
+export function mountsInside(entries : MountEntry[], target : string) : MountEntry[] {
+    return entries.filter((entry) => isInside(entry.mountPoint, target));
+}

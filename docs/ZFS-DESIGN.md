@@ -1,6 +1,6 @@
 # Design: dataset ZFS per stack e volumi
 
-Stato: fase 1 (rilevamento e sola lettura) implementata; fasi 2–4 da fare (§13).
+Stato: fase 1 implementata; fase 2 implementata tranne la scheda "In questo stack" del selettore e le operazioni API sui permessi e sulle proprietà (§13); fasi 3–4 da fare.
 
 Obiettivo: quando la cartella degli stack è su ZFS (in particolare su TrueNAS SCALE), Dockge crea e gestisce i dataset di stack e volumi. Nel compose si scrivono percorsi relativi (`./library`) invece di `/mnt/pool/...`, e diventano possibili snapshot, rollback e clone per stack.
 
@@ -194,13 +194,15 @@ Con Docker in `userns-remap` gli UID sono spostati: va rilevato (`docker info`) 
 
 ### 7.2 Tipo di ACL
 
-ACL NFSv4 con `aclmode=restricted` (tipico dei preset SMB) fa fallire `chmod` con EPERM, e molti entrypoint vanno in crash. Per i volumi: ACL POSIX (o nessuna) con i bit classici. Il preset Apps di TrueNAS è POSIX e aggiunge il gruppo 568 (apps).
+ACL NFSv4 con `aclmode=restricted` (tipico dei preset SMB) fa fallire `chmod` con EPERM, e molti entrypoint vanno in crash. Per i volumi: ACL POSIX (o nessuna) con i bit classici. Attenzione: in TrueNAS 25.04 il preset Apps **non** è POSIX: imposta NFSv4 con `aclmode=passthrough` e aggiunge l'utente 568 (apps) con permesso MODIFY. Dockge crea i dataset con `share_type: GENERIC`, che eredita tipo e modo delle ACL dal padre.
 
 La soluzione pulita è configurare così `pool/stacks` una volta e far **ereditare** tutto. Dockge avvisa se trova NFSv4 + restricted.
 
 ### 7.3 Chi può fare cosa
 
-- La chiave API di TrueNAS va legata a un utente dedicato con solo i ruoli necessari (dataset, snapshot, permessi), non ad admin. `pool.dataset.rename` richiede `DATASET_WRITE`; i nomi degli altri ruoli vanno verificati sulla versione installata.
+- La chiave API di TrueNAS va legata a un utente dedicato con solo i ruoli necessari, non ad admin. Verificati sul codice di 25.04.2: `pool.dataset.query` richiede `DATASET_READ`, `pool.dataset.create` / `update` / `rename` richiedono `DATASET_WRITE` (che include `DATASET_READ`), `pool.dataset.delete` `DATASET_DELETE`, gli snapshot `SNAPSHOT_WRITE` / `SNAPSHOT_DELETE`, `filesystem.setperm` / `chown` `FILESYSTEM_ATTRS_WRITE`. Per la fase 2 basta `DATASET_WRITE`: proprietario e permessi dei dataset nuovi li applica Dockge stesso (gira come root e vede il mount).
+- Login: `auth.login_ex` con `mechanism: API_KEY_PLAIN`, che richiede anche il nome dell'utente proprietario della chiave.
+- TrueNAS **revoca** una chiave API usata su una connessione non sicura (né TLS, né socket Unix, né loopback): dal container di Dockge si arriva all'host via rete, quindi Dockge accetta solo `wss://`. Il certificato autofirmato di TrueNAS si accetta fissandone l'impronta SHA-256 (verificata prima di inviare la chiave).
 - Dockge rifiuta lato server ogni operazione fuori dal sottoalbero del dataset della cartella stacks, anche se la chiave potrebbe di più.
 - La distruzione di dataset è disattivata di default.
 - La chiave di TrueNAS salvata in Dockge non esce mai da nessuna operazione, UI o API.
@@ -315,6 +317,9 @@ Le operazioni sono definite una sola volta in `backend/api/operations.ts` ed esp
 
 1. **Rilevamento e sola lettura**: stato ZFS e propagazione, avvisi (§5), etichette sui volumi nell'editor e nel selettore, `get_storage_status` / `get_stack_storage`, inversione dei testi API/MCP. **Fatta** (`backend/zfs/`, Impostazioni → Archiviazione). Rimandati alla fase 2 perché richiedono le proprietà dei dataset, quindi il provider: avviso ACL NFSv4 + `aclmode=restricted`, proprietà e differenze con `x-dockge.zfs`, dataset vuoto usato per un nuovo stack.
 2. **Creazione**: provider TrueNAS, nuovi stack come dataset, volumi creati prima del deploy con proprietà e permessi, scheda "In questo stack", selettore alimentato dall'API di TrueNAS. Nel selettore, il badge "stack X" va mostrato solo se la cartella contiene un compose; il selettore deve sapere da quale stack è aperto: per le cartelle di quello stack il badge diventa "questo stack" e il percorso scelto viene inserito come `./nome`.
+   **Fatto**: client JSON-RPC (`backend/zfs/truenas-client.ts`, solo `wss://`, impronta del certificato), impostazioni per endpoint, nuovi stack come dataset (anche riusando un dataset vuoto creato prima), controllo dei volumi mancanti prima di deploy / avvio / aggiorna con la regola chiedi / dataset / cartella e il dialogo, `x-dockge.zfs` (recordsize, compression, atime, quota, owner, mode) con le differenze mostrate nell'editor, proprietario suggerito da `user:` / `PUID` / immagine, avvisi su ACL restricted e su mountpoint diverso, badge del selettore, `create_volume_dataset` e `dryRun` nelle API.
+   Nel frattempo, rinomina ed eliminazione di uno stack che contiene dataset vengono rifiutate (l'eliminazione rimuove i container e conserva i dati) fino alla fase 4.
+   **Da fare**: scheda "In questo stack" con preset, selettore alimentato da `pool.dataset.query`, `set_volume_permissions` / `set_dataset_properties`, rilevamento di `userns-remap`.
 3. **Snapshot**: manuali, automatici prima di "Aggiorna", rollback, clone.
 4. **Migrazioni**: conversione guidata di cartelle e stack esistenti, adozione di dataset esterni, rinomina ed eliminazione consapevoli dei dataset, procedura per la cartella stacks (§5.1), recupero di dati nascosti.
 

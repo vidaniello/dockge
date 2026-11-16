@@ -8,6 +8,10 @@ import { dockerApiGet } from "../docker-api";
 import { isInContainer } from "../host-ips";
 import { hasVariable, splitShort } from "../bind-mounts";
 import { log } from "../log";
+import { getZfsSettings, isTrueNasConfigured } from "./settings";
+import { DatasetInfo, getProvider } from "./provider";
+import { TrueNasCertificateError } from "./truenas-client";
+import { compareRecipe, parseRecipes, PropertyDifference, VolumeRecipe } from "./recipe";
 import {
     datasetOf, findMount, getPropagation, getSpace, isInside, isZfsByStatfs, mountAt, MountEntry, Propagation, readMountInfo
 } from "./mountinfo";
@@ -58,10 +62,14 @@ export interface StorageStatus {
         kernelVersion : string | null;
         operatingSystem : string | null;
     };
-    /** Provider able to create datasets. None yet: phase 1 only reads */
-    provider : null;
+    /** Provider able to create datasets: configured in Settings → Storage */
+    provider : "truenas" | null;
+    /** User the provider logs in as, when the connection works */
+    providerUser : string | null;
     /** The stacks folder satisfies every requirement for the dataset features (dataset root, propagation) */
     ready : boolean;
+    /** ready, a provider works, the stacks dataset is where Dockge sees it: stacks and volumes can be created as datasets */
+    canCreate : boolean;
     space : Space | null;
     problems : StorageProblem[];
 }
@@ -88,6 +96,14 @@ export interface VolumeStorage {
     /** The path is the stack folder itself (".") */
     isStackFolder : boolean;
     space : Space | null;
+    /** kind "dataset", read from the provider: recordsize, compression, atime, quota, acltype, aclmode, used, available */
+    properties : Record<string, string> | null;
+    /** The dataset was created by Dockge (user property dockge:managed) */
+    managed : boolean | null;
+    /** Entry of x-dockge.zfs for this path */
+    recipe : VolumeRecipe | null;
+    /** Differences between the dataset and x-dockge.zfs */
+    differences : PropertyDifference[];
 }
 
 export interface StackStorage {
@@ -102,6 +118,12 @@ export interface StackStorage {
     /** Where the bind mounts come from: the output of docker compose config, or compose.yaml read by Dockge */
     resolvedBy : "docker compose config" | "compose.yaml";
     volumes : VolumeStorage[];
+    /** Datasets can be created for this stack (the stacks folder allows it and the stack is a dataset) */
+    canCreateDatasets : boolean;
+    /** Invalid entries of x-dockge.zfs */
+    recipeErrors : string[];
+    /** The provider could not be read: properties and differences are missing */
+    providerError : string | null;
 }
 
 interface HostInfo {
@@ -221,6 +243,12 @@ export async function getStorageStatus(server : DockgeServer) : Promise<StorageS
         }
     }
 
+    const ready = zfs && stacksIsDatasetRoot && (!inContainer || propagation !== "private");
+    const providerCheck = zfs && dataset && stacksIsDatasetRoot ? await checkProvider(dataset, stacksDir, host.truenas) : null;
+    if (providerCheck) {
+        problems.push(...providerCheck.problems);
+    }
+
     return {
         stacksDir,
         zfs,
@@ -231,11 +259,156 @@ export async function getStorageStatus(server : DockgeServer) : Promise<StorageS
         inContainer,
         propagation,
         host,
-        provider: null,
-        ready: zfs && stacksIsDatasetRoot && (!inContainer || propagation !== "private"),
+        provider: providerCheck?.provider ?? null,
+        providerUser: providerCheck?.user ?? null,
+        ready,
+        canCreate: ready && providerCheck?.ok === true,
         space: getSpace(stacksDir),
         problems,
     };
+}
+
+interface ProviderCheck {
+    provider : "truenas" | null;
+    user : string | null;
+    ok : boolean;
+    problems : StorageProblem[];
+    stacksDataset : DatasetInfo | null;
+}
+
+const PROVIDER_CACHE_MS = 5 * 60 * 1000;
+let providerCache : { key : string, time : number, check : ProviderCheck } | undefined;
+
+/**
+ * Forget the cached provider check (after the settings changed)
+ */
+export function resetProviderCache() {
+    providerCache = undefined;
+    datasetCache.clear();
+}
+
+/**
+ * Connect to the provider and check the dataset of the stacks folder: it must be mounted where Dockge sees the
+ * stacks folder, and its ACL must not prevent chmod. Cached, the result rarely changes.
+ */
+async function checkProvider(stacksDataset : string, stacksDir : string, truenasHost : boolean) : Promise<ProviderCheck> {
+    const settings = await getZfsSettings();
+    const result : ProviderCheck = {
+        provider: null,
+        user: null,
+        ok: false,
+        problems: [],
+        stacksDataset: null,
+    };
+
+    if (!isTrueNasConfigured(settings)) {
+        if (truenasHost) {
+            result.problems.push({
+                code: "truenasNotConfigured",
+                severity: "info",
+                message: "Dockge runs on TrueNAS: configure the TrueNAS API below to create stacks and volumes as datasets.",
+                remedy: "Create an API key for a dedicated TrueNAS user and enter the URL, the user and the key.",
+                params: {},
+            });
+        }
+        return result;
+    }
+    result.provider = "truenas";
+
+    const key = JSON.stringify([ stacksDataset, stacksDir, settings.truenasUrl, settings.truenasUsername, settings.truenasApiKey, settings.truenasFingerprint ]);
+    if (providerCache && providerCache.key === key && Date.now() - providerCache.time < PROVIDER_CACHE_MS) {
+        return providerCache.check;
+    }
+
+    const provider = getProvider(settings);
+    try {
+        if (!provider) {
+            throw new Error("Not configured");
+        }
+        result.user = await provider.whoAmI();
+        const [ info ] = await provider.getDatasets(stacksDataset, false);
+        if (!info) {
+            throw new Error(`The dataset ${stacksDataset} is not visible to the TrueNAS user ${settings.truenasUsername}`);
+        }
+        result.stacksDataset = info;
+        result.ok = true;
+
+        if (info.mountpoint && path.resolve(info.mountpoint) !== stacksDir) {
+            result.ok = false;
+            result.problems.push({
+                code: "stacksMountpointMismatch",
+                severity: "error",
+                message: `On the host the dataset ${stacksDataset} is mounted at ${info.mountpoint}, but Dockge sees it at ${stacksDir}. Datasets would be created where Dockge does not expect them.`,
+                remedy: "Mount the stacks folder into Dockge with the same path on both sides (source and target), and set DOCKGE_STACKS_DIR to that path.",
+                params: {
+                    dataset: stacksDataset,
+                    mountpoint: info.mountpoint,
+                    stacksDir,
+                },
+            });
+        }
+
+        if (info.properties.acltype?.toUpperCase() === "NFSV4" && info.properties.aclmode?.toUpperCase() === "RESTRICTED") {
+            result.problems.push({
+                code: "aclRestricted",
+                severity: "warning",
+                message: `The dataset ${stacksDataset} has NFSv4 ACLs with aclmode=restricted (typical of the SMB preset): new datasets inherit it, chmod fails with "Operation not permitted" and many containers crash at start.`,
+                remedy: "In TrueNAS set the ACL mode of the stacks dataset to Passthrough (Edit dataset → Advanced → ACL Mode), or use POSIX ACLs.",
+                params: {
+                    dataset: stacksDataset,
+                },
+            });
+        }
+    } catch (e) {
+        result.ok = false;
+        const certificate = e instanceof TrueNasCertificateError ? e : null;
+        result.problems.push({
+            code: certificate ? "truenasCertificate" : "truenasConnection",
+            severity: "error",
+            message: `Cannot use the TrueNAS API: ${e instanceof Error ? e.message : e}`,
+            remedy: certificate
+                ? "Check the fingerprint against the certificate of TrueNAS (System → Certificates) and trust it in the TrueNAS section below."
+                : "Check URL, user and API key below (Test connection), and that the user has the roles to read and create datasets.",
+            params: {
+                error: e instanceof Error ? e.message : String(e),
+                fingerprint: certificate?.fingerprint ?? "",
+            },
+        });
+    }
+
+    providerCache = {
+        key,
+        time: Date.now(),
+        check: result,
+    };
+    return result;
+}
+
+const DATASET_CACHE_MS = 30 * 1000;
+const datasetCache = new Map<string, { time : number, list : DatasetInfo[] }>();
+
+/**
+ * Datasets of a stack (the stack dataset and its descendants), from the provider. null when there is no provider.
+ */
+async function getStackDatasets(stackDataset : string) : Promise<DatasetInfo[] | null> {
+    const cached = datasetCache.get(stackDataset);
+    if (cached && Date.now() - cached.time < DATASET_CACHE_MS) {
+        return cached.list;
+    }
+    const provider = getProvider(await getZfsSettings());
+    if (!provider) {
+        return null;
+    }
+    const list = await provider.getDatasets(stackDataset, true);
+    datasetCache.set(stackDataset, {
+        time: Date.now(),
+        list,
+    });
+    return list;
+}
+
+export function forgetStackDatasets(stackDataset : string) {
+    datasetCache.delete(stackDataset);
 }
 
 /**
@@ -249,11 +422,13 @@ export async function getStorageSummary(server : DockgeServer) {
         stacksIsDatasetRoot: status.stacksIsDatasetRoot,
         truenas: status.host.truenas,
         ready: status.ready,
+        provider: status.provider,
+        canCreate: status.canCreate,
         problems: status.problems.map((problem) => problem.code),
     };
 }
 
-interface BindSource {
+export interface BindSource {
     service : string;
     /** As written, or absolute when resolved by docker compose config */
     source : string;
@@ -304,18 +479,24 @@ export function bindSourcesFromYAML(content : string) : BindSource[] {
 }
 
 /**
- * Bind mounts resolved by docker compose (absolute paths, variables replaced). Throws if the file is invalid.
+ * The compose file as resolved by docker compose (absolute paths, variables replaced). Throws if it is invalid.
  */
-async function bindSourcesFromCompose(stack : Stack) : Promise<BindSource[]> {
+export async function loadComposeConfig(stack : Stack) : Promise<Record<string, unknown>> {
     const res = await childProcessAsync.spawn("docker", stack.getComposeOptions("config", "--format", "json"), {
         cwd: stack.path,
         encoding: "utf-8",
         timeout: 30 * 1000,
         maxBuffer: 16 * 1024 * 1024,
     });
-    const config = JSON.parse(res.stdout?.toString() ?? "");
+    return JSON.parse(res.stdout?.toString() ?? "");
+}
+
+/**
+ * Bind mounts of a resolved compose config
+ */
+export function bindSourcesFromConfig(config : Record<string, unknown>) : BindSource[] {
     const result : BindSource[] = [];
-    for (const [ service, definition ] of Object.entries(config?.services ?? {})) {
+    for (const [ service, definition ] of Object.entries((config?.services ?? {}) as Record<string, unknown>)) {
         const volumes = (definition as { volumes? : unknown } | null)?.volumes;
         if (!Array.isArray(volumes)) {
             continue;
@@ -330,6 +511,10 @@ async function bindSourcesFromCompose(stack : Stack) : Promise<BindSource[]> {
         }
     }
     return result;
+}
+
+async function bindSourcesFromCompose(stack : Stack) : Promise<BindSource[]> {
+    return bindSourcesFromConfig(await loadComposeConfig(stack));
 }
 
 function toRelative(target : string, stackDir : string) : string {
@@ -356,6 +541,10 @@ export function describeBindSource(source : string, stackDir : string, stacksDir
         dataset: null,
         isStackFolder: false,
         space: null,
+        properties: null,
+        managed: null,
+        recipe: null,
+        differences: [],
     };
 
     if (hasVariable(source) || source.startsWith("~")) {
@@ -434,11 +623,13 @@ export async function getStackStorage(server : DockgeServer, stackName : string,
 
     let sources : BindSource[];
     let resolvedBy : StackStorage["resolvedBy"] = "compose.yaml";
+    let content = composeYAML ?? "";
 
     if (composeYAML !== undefined) {
         sources = bindSourcesFromYAML(composeYAML);
     } else {
         const stack = await Stack.getStack(server, stackName);
+        content = stack.composeYAML;
         try {
             sources = await bindSourcesFromCompose(stack);
             resolvedBy = "docker compose config";
@@ -469,17 +660,58 @@ export async function getStackStorage(server : DockgeServer, stackName : string,
     const stackMount = fs.existsSync(stackDir) ? findMount(mounts, realPath(stackDir)) : findMount(mounts, existingAncestor(stackDir));
     const own = mountAt(mounts, stackDir);
     const zfs = stackMount ? stackMount.fsType === "zfs" : isZfsByStatfs(stacksDir);
+    const isDataset = isZfsMount(own) && own.root === "/";
+    const volumes = [ ...byPath.values() ];
+
+    // x-dockge.zfs: recipe of each volume inside the stack
+    const { recipes, errors: recipeErrors } = parseRecipes(content);
+    for (const volume of volumes) {
+        if (volume.location === "stack" && volume.relative && volume.relative !== ".") {
+            volume.recipe = recipes.get(volume.relative.replace(/^\.\//, "")) ?? null;
+        }
+    }
+
+    // Properties of the datasets of the stack, from the provider
+    let providerError : string | null = null;
+    if (isDataset && own) {
+        try {
+            const datasets = await getStackDatasets(own.source);
+            if (datasets) {
+                const byName = new Map(datasets.map((dataset) => [ dataset.name, dataset ]));
+                for (const volume of volumes) {
+                    const info = volume.kind === "dataset" && volume.dataset ? byName.get(volume.dataset) : undefined;
+                    if (info) {
+                        volume.properties = info.properties;
+                        volume.managed = info.userProperties["dockge:managed"] === "true";
+                        volume.differences = volume.recipe ? compareRecipe(volume.recipe, info) : [];
+                    }
+                }
+            }
+        } catch (e) {
+            providerError = e instanceof Error ? e.message : String(e);
+        }
+    }
+
+    let canCreateDatasets = false;
+    if (isDataset) {
+        canCreateDatasets = (await getStorageStatus(server)).canCreate;
+    }
 
     return {
         stack: stackName,
         path: stackDir,
         zfs,
-        isDataset: isZfsMount(own) && own.root === "/",
+        isDataset,
         dataset: zfs && stackMount ? datasetOf(stackMount, stackDir).dataset : null,
         resolvedBy,
-        volumes: [ ...byPath.values() ],
+        volumes,
+        canCreateDatasets,
+        recipeErrors,
+        providerError,
     };
 }
+
+const COMPOSE_FILE_NAMES = [ "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml" ];
 
 /**
  * ZFS information for the entries of the host path picker
@@ -494,7 +726,11 @@ export function describeHostPaths(entries : string[], stacksDir : string) : Map<
         const own = mountAt(mounts, entry);
         let stack : string | null = null;
         if (isInside(entry, stacks) && entry !== stacks) {
-            stack = path.relative(stacks, entry).split(path.sep)[0];
+            const name = path.relative(stacks, entry).split(path.sep)[0];
+            // Only a real stack: a folder with a compose file
+            if (COMPOSE_FILE_NAMES.some((file) => fs.existsSync(path.join(stacks, name, file)))) {
+                stack = name;
+            }
         }
         result.set(entry, {
             dataset: isZfsMount(own) && own.root === "/" ? own.source : null,

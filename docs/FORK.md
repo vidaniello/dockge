@@ -9,14 +9,33 @@ Questo fork aggiunge a Dockge:
 - avvisi sulle immagini aggiornabili;
 - API REST + endpoint MCP per script e assistenti AI, con chiavi API.
 
-Dataset ZFS per stack e volumi: in corso, vedi [ZFS-DESIGN.md](ZFS-DESIGN.md). Per ora Dockge riconosce i dataset e li mostra, senza crearli.
+Dataset ZFS per stack e volumi: in corso, vedi [ZFS-DESIGN.md](ZFS-DESIGN.md). Dockge riconosce i dataset e, su TrueNAS con l'API configurata, crea come dataset i nuovi stack e i loro volumi.
 
-## Archiviazione ZFS (sola lettura)
+## Archiviazione ZFS
 
 - **Impostazioni → Archiviazione**: filesystem della cartella degli stack, dataset, se la cartella è la radice del dataset, propagazione del mount, host TrueNAS, spazio libero, eventuali problemi con il rimedio.
 - Se la cartella degli stack è su ZFS, la pagina dello stack mostra se lo stack è un dataset e, nell'editor, ogni volume ha un'etichetta: `dataset`, `cartella`, `mancante: Docker crea una cartella`, `dataset esterno`, `nello stack X`, `non visibile`. Un percorso assoluto dentro lo stack propone il relativo (`./nome`) con un clic.
 - Il selettore di percorsi mostra il dataset montato su ogni cartella e a quale stack appartiene.
-- API: `get_storage_status`, `get_stack_storage`; `get_info` riassume lo stato; `list_host_paths` aggiunge `dataset` e `stack`.
+- API: `get_storage_status`, `get_stack_storage`, `create_volume_dataset`; `get_info` riassume lo stato; `list_host_paths` aggiunge `dataset` e `stack`; `create_stack` accetta `dataset`, `deploy_stack` / `start_stack` / `update_stack` accettano `missingVolumes` e `dryRun`.
+
+### Creazione dei dataset (TrueNAS)
+
+1. In TrueNAS crea un utente dedicato (es. `dockge`, senza shell), un privilegio con il solo ruolo `DATASET_WRITE` assegnato a un suo gruppo, e una chiave API per quell'utente.
+2. In **Impostazioni → Archiviazione** inserisci URL (`wss://<ip di TrueNAS>/api/current`, oppure `https://…`), utente e chiave, poi **Salva e verifica**. Con il certificato autofirmato di TrueNAS compare l'impronta: confrontala con quella in System → Certificates e premi **Fidati di questo certificato**.
+3. Da quel momento:
+   - un nuovo stack può nascere come dataset (`<dataset stacks>/<nome>`, opzione nella creazione, predefinita dalle impostazioni); un dataset vuoto con quel nome creato prima da TrueNAS viene usato;
+   - prima di deploy, avvio e aggiornamento, i volumi `./xxx` che non esistono vengono creati come dataset o cartelle (regola: chiedi / dataset / cartella). Con "chiedi" compare un dialogo con tipo, proprietario suggerito e permessi;
+   - le proprietà dei nuovi dataset si scrivono nel compose:
+
+```yaml
+x-dockge:
+  zfs:
+    library: { recordsize: 1M }
+    pgdata:  { recordsize: 16K, owner: "999:999", mode: "0700" }
+```
+
+   Sui dataset esistenti Dockge non cambia niente: se le proprietà differiscono, l'editor mostra `≠ x-dockge.zfs`.
+- Rinomina ed eliminazione di uno stack che è (o contiene) un dataset non sono ancora gestite: la rinomina viene rifiutata, l'eliminazione rimuove i container e conserva i dati. Il dataset si rinomina o distrugge da TrueNAS.
 - Per vedere i dataset creati sull'host dopo l'avvio di Dockge, la cartella degli stack va montata con `propagation: rslave`:
 
 ```yaml

@@ -25,7 +25,8 @@ const MCP_INSTRUCTIONS = `Dockge manages Docker Compose stacks on this server.
 - A stack is a folder <stacks dir>/<name> with compose.yaml (and .env). Names: lowercase letters, digits, - and _.
 - Start with list_stacks / get_stack. Change files with create_stack or update_stack_files, then deploy_stack.
 - Bind mounts: data of a stack goes in its own folder with a relative path (./data:/data); get_stack_storage shows whether each path is a ZFS dataset, a folder or missing. Use absolute host paths (list_host_paths) only for data shared between stacks or outside the stacks folder.
-- get_storage_status tells whether the stacks folder is on ZFS and what is wrong with it.
+- get_storage_status tells whether the stacks folder is on ZFS and whether stacks and volumes can be created as datasets (canCreate). Then create_stack makes the stack a dataset, and deploy_stack / start_stack / update_stack create the missing ./xxx volumes as datasets or folders (missingVolumes; with "fail" you get the list). x-dockge.zfs in compose.yaml sets their properties, e.g. x-dockge: {zfs: {pgdata: {recordsize: 16K, owner: "999:999"}}}.
+- Use dryRun to see what would be created before writing.
 - To publish a port on one IP use IP:HOST:CONTAINER (list_host_ips).
 - list_image_updates / check_image_updates tell which images have a newer version; update_stack pulls and recreates.
 - delete_stack removes the stack folder: always ask the user before calling it.`;
