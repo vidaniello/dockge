@@ -29,6 +29,9 @@
                         <span class="badge ms-2 volume-label" :class="volumeLabel(array[index]).class" :title="volumeLabel(array[index]).title">
                             {{ volumeLabel(array[index]).text }}
                         </span>
+                        <span v-if="volumeLabel(array[index]).differences" class="badge bg-warning text-dark ms-1 volume-label" :title="volumeLabel(array[index]).differences">
+                            ≠ x-dockge.zfs
+                        </span>
                     </template>
                     <font-awesome-icon v-if="browse" icon="folder-open" class="action browse ms-2" :title="$t('pickHostPath')" @click="browsePath(index)" />
                     <font-awesome-icon icon="times" class="action remove ms-2 me-3 text-danger" @click="remove(index)" />
@@ -40,7 +43,7 @@
                 <font-awesome-icon icon="folder-open" class="me-1" />
                 {{ $t("addHostPath") }}
             </button>
-            <PathPicker v-if="browse" ref="picker" :endpoint="getEndpoint()" />
+            <PathPicker v-if="browse" ref="picker" :endpoint="getEndpoint()" :current-stack="getStackName()" />
         </div>
         <div v-else>
             {{ $t("LongSyntaxNotSupported") }}
@@ -65,6 +68,18 @@ export default {
         getVolumeStorage: {
             from: "composeVolumeStorage",
             default: () => () => null,
+        },
+        getMissingVolumesRule: {
+            from: "composeMissingVolumesRule",
+            default: () => () => null,
+        },
+        getStackName: {
+            from: "composeStackName",
+            default: () => () => "",
+        },
+        toStackRelative: {
+            from: "composeToStackRelative",
+            default: () => (picked) => picked,
         },
     },
     props: {
@@ -280,11 +295,16 @@ export default {
             }
             // An absolute path into the stack folder: suggest the relative one, it survives a rename
             const relative = info.location === "stack" && !host.startsWith(".") && info.relative && !info.isStackFolder ? info.relative : null;
+            const differences = (info.differences ?? []).map((item) => this.$t("storageDifference", [ item.property, item.actual, item.expected ])).join("\n");
+            const properties = info.properties ? Object.entries(info.properties)
+                .filter(([ key ]) => [ "recordsize", "compression", "atime", "quota", "used", "available" ].includes(key))
+                .map(([ key, value ]) => `${key}: ${value}`).join("\n") : "";
             const label = (text, cls, title) => ({
                 text,
                 class: cls,
-                title,
+                title: [ title, properties ].filter((part) => part).join("\n"),
                 relative,
+                differences,
             });
 
             if (info.location === "otherStack") {
@@ -305,7 +325,16 @@ export default {
                     if (info.location !== "stack") {
                         return label(this.$t("storageLabelMissing"), "bg-warning text-dark", info.hostPath);
                     }
-                    return label(this.$t("storageLabelMissingInStack"), "bg-warning text-dark", this.$t("storageLabelMissingInStackHint"));
+                    switch (this.getMissingVolumesRule()) {
+                        case "ask":
+                            return label(this.$t("storageLabelMissingAsk"), "bg-info text-dark", this.$t("storageLabelMissingAskHint"));
+                        case "dataset":
+                            return label(this.$t("storageLabelMissingDataset"), "bg-info text-dark", this.$t("storageLabelMissingDatasetHint"));
+                        case "directory":
+                            return label(this.$t("storageLabelMissingDirectory"), "bg-secondary", this.$t("storageLabelMissingDirectoryHint"));
+                        default:
+                            return label(this.$t("storageLabelMissingInStack"), "bg-warning text-dark", this.$t("storageLabelMissingInStackHint"));
+                    }
                 case "file":
                     return label(this.$t("storageLabelFile"), "bg-light text-dark", info.dataset ?? "");
                 case "notVisible":
@@ -339,19 +368,21 @@ export default {
             const separator = value.indexOf(":");
             const host = separator >= 0 ? value.slice(0, separator) : value;
 
-            const picked = await this.$refs.picker.open(host);
+            let picked = await this.$refs.picker.open(host);
             if (!picked) {
                 return;
             }
+            picked = this.toStackRelative(picked);
 
             this.array[index] = separator >= 0 ? picked + value.slice(separator) : picked + ":";
         },
 
         async addBrowsedField() {
-            const picked = await this.$refs.picker.open("");
+            let picked = await this.$refs.picker.open("");
             if (!picked) {
                 return;
             }
+            picked = this.toStackRelative(picked);
             if (!this.service[this.name]) {
                 this.service[this.name] = [];
             }

@@ -24,6 +24,7 @@ declare module 'vue' {
     GlobalEnv: typeof import('./src/components/settings/GlobalEnv.vue')['default']
     HiddenInput: typeof import('./src/components/HiddenInput.vue')['default']
     Login: typeof import('./src/components/Login.vue')['default']
+    MissingVolumesDialog: typeof import('./src/components/MissingVolumesDialog.vue')['default']
     NetworkInput: typeof import('./src/components/NetworkInput.vue')['default']
     PathPicker: typeof import('./src/components/PathPicker.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

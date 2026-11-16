@@ -111,6 +111,8 @@ async function runWithOutput(stack : Stack, action : () => Promise<unknown>) : P
         };
     } catch (e) {
         return {
+            // Structured details, e.g. missingVolumes
+            ...((e as { data? : object })?.data ?? {}),
             ok: false,
             error: e instanceof Error ? e.message : String(e),
             output: limitOutput(stripAnsi(output)),
@@ -144,7 +146,43 @@ const serviceName : JSONSchema = {
     description: "Service name as written in compose.yaml",
 };
 
-function stackAction(id : string, action : string, summary : string, run : (stack : Stack) => Promise<unknown>, destructive = false) : Operation {
+const missingVolumesParam : JSONSchema = {
+    description: "Only when the stack is a ZFS dataset and Dockge can create datasets: what to do with the ./xxx bind mounts that do not exist yet. " +
+        "\"dataset\" or \"directory\" for all, \"fail\" to stop and get the list (missingVolumes in the result), or an object " +
+        "{\"./data\": {\"type\": \"dataset\", \"owner\": \"1000:1000\", \"mode\": \"0750\"}}. Default: the rule of the ZFS settings (\"ask\" means fail here).",
+};
+
+const dryRunParam : JSONSchema = {
+    type: "boolean",
+    description: "Return the plan (what would be created) without changing anything",
+    default: false,
+};
+
+/**
+ * Plan of the missing volumes of a saved stack, for dryRun
+ */
+async function volumePlan(server : DockgeServer, stack : Stack, missingVolumes : unknown) {
+    const { prepareStackVolumes, findMissingVolumes, MissingVolumesError } = await import("../zfs/volumes");
+    try {
+        return {
+            dryRun: true,
+            ...(await prepareStackVolumes(server, stack, missingVolumes, false, true)),
+        };
+    } catch (e) {
+        if (e instanceof MissingVolumesError) {
+            return {
+                dryRun: true,
+                plan: [],
+                warnings: [],
+                missingVolumes: (await findMissingVolumes(server, stack)).missing,
+                error: e.message,
+            };
+        }
+        throw e;
+    }
+}
+
+function stackAction(id : string, action : string, summary : string, run : (stack : Stack, args : LooseObject) => Promise<unknown>, destructive = false, volumes = false) : Operation {
     return {
         id,
         method: "post",
@@ -155,11 +193,18 @@ function stackAction(id : string, action : string, summary : string, run : (stac
         destructive,
         params: {
             name: stackName,
+            ...(volumes ? {
+                missingVolumes: missingVolumesParam,
+                dryRun: dryRunParam,
+            } : {}),
         },
         required: [ "name" ],
         handler: async (args, server) => {
             const stack = await getManagedStack(server, args.name);
-            const result = await runWithOutput(stack, () => run(stack));
+            if (volumes && (args.dryRun === true || args.dryRun === "true")) {
+                return volumePlan(server, stack, args.missingVolumes);
+            }
+            const result = await runWithOutput(stack, () => run(stack, args));
             server.sendStackList();
             return result;
         },
@@ -280,6 +325,15 @@ export const operations : Operation[] = [
                 description: "Run docker compose up -d after creating it",
                 default: true,
             },
+            dataset: {
+                type: "boolean",
+                description: "Create the stack folder as a ZFS dataset (default: the ZFS settings, when the stacks folder allows it; see get_storage_status canCreate)",
+            },
+            missingVolumes: missingVolumesParam,
+            dryRun: {
+                ...dryRunParam,
+                description: "Only tell whether the folder would be created as a dataset, without creating anything",
+            },
         },
         required: [ "name", "composeYAML" ],
         handler: async (args, server) => {
@@ -287,7 +341,24 @@ export const operations : Operation[] = [
                 throw new ValidationError("composeYAML must be a string");
             }
             const stack = new Stack(server, String(args.name ?? ""), args.composeYAML, typeof(args.composeENV) === "string" ? args.composeENV : "", false);
-            await stack.save(true);
+            const dataset = typeof(args.dataset) === "boolean" ? args.dataset : (args.dataset === "true" ? true : args.dataset === "false" ? false : undefined);
+            if (args.dryRun === true || args.dryRun === "true") {
+                stack.validate();
+                const { getStorageStatus } = await import("../zfs/storage");
+                const status = await getStorageStatus(server);
+                const asDataset = await stack.shouldCreateDataset(dataset);
+                return {
+                    dryRun: true,
+                    name: stack.name,
+                    path: stack.path,
+                    createdAs: asDataset ? "dataset" : "folder",
+                    dataset: asDataset ? `${status.dataset}/${stack.name}` : null,
+                    note: "Missing ./xxx volumes are checked at deploy time: use deploy_stack with dryRun after creating the stack without deploy",
+                };
+            }
+            await stack.save(true, {
+                dataset,
+            });
             if (typeof(args.folder) === "string" && args.folder.trim()) {
                 await stack.setFolder(args.folder);
             }
@@ -297,7 +368,9 @@ export const operations : Operation[] = [
             };
             if (args.deploy !== false) {
                 const saved = await Stack.getStack(server, stack.name);
-                result = await runWithOutput(saved, () => saved.deploy());
+                result = await runWithOutput(saved, () => saved.deploy(undefined, {
+                    missingVolumes: args.missingVolumes,
+                }));
             }
             server.sendStackList();
             return {
@@ -330,6 +403,7 @@ export const operations : Operation[] = [
                 description: "Run docker compose up -d after saving",
                 default: false,
             },
+            missingVolumes: missingVolumesParam,
         },
         required: [ "name" ],
         handler: async (args, server) => {
@@ -343,7 +417,9 @@ export const operations : Operation[] = [
                 output: "",
             };
             if (args.deploy === true) {
-                result = await runWithOutput(stack, () => stack.deploy());
+                result = await runWithOutput(stack, () => stack.deploy(undefined, {
+                    missingVolumes: args.missingVolumes,
+                }));
             }
             server.sendStackList();
             return {
@@ -358,7 +434,7 @@ export const operations : Operation[] = [
         method: "delete",
         path: "/stacks/:name",
         summary: "Stop and remove the containers of a stack and DELETE its folder (compose.yaml, .env and any data stored inside it)",
-        description: "Named volumes are not removed. Requires confirm=true.",
+        description: "Named volumes are not removed. A stack that is (or contains) a ZFS dataset is not deleted: the containers are removed and the data is kept (destroy the dataset in TrueNAS). Requires confirm=true.",
         tag: "Stacks",
         permission: "write",
         destructive: true,
@@ -380,15 +456,21 @@ export const operations : Operation[] = [
             return result;
         },
     },
-    stackAction("deploy_stack", "deploy", "docker compose up -d --remove-orphans (create or update the containers)", (stack) => stack.deploy()),
-    stackAction("start_stack", "start", "Start a stack (docker compose up -d)", (stack) => stack.start()),
+    stackAction("deploy_stack", "deploy", "docker compose up -d --remove-orphans (create or update the containers)", (stack, args) => stack.deploy(undefined, {
+        missingVolumes: args.missingVolumes,
+    }), false, true),
+    stackAction("start_stack", "start", "Start a stack (docker compose up -d)", (stack, args) => stack.start(undefined, {
+        missingVolumes: args.missingVolumes,
+    }), false, true),
     stackAction("stop_stack", "stop", "Stop the containers of a stack (docker compose stop)", (stack) => stack.stop()),
     stackAction("restart_stack", "restart", "Restart the containers of a stack (docker compose restart)", (stack) => stack.restart()),
     stackAction("down_stack", "down", "Stop and remove the containers and networks of a stack (docker compose down). Files and volumes are kept.", (stack) => stack.down()),
-    stackAction("update_stack", "update", "Pull the newest images and recreate the containers if the stack is running", async (stack) => {
-        await stack.update();
+    stackAction("update_stack", "update", "Pull the newest images and recreate the containers if the stack is running", async (stack, args) => {
+        await stack.update(undefined, {
+            missingVolumes: args.missingVolumes,
+        });
         imageUpdateChecker.checkStack(stack.name).catch(() => {});
-    }),
+    }, false, true),
     {
         id: "rename_stack",
         method: "post",
@@ -823,6 +905,89 @@ export const operations : Operation[] = [
         handler: async (args, server) => {
             const stack = await getManagedStack(server, args.name);
             return getStackStorage(server, stack.name);
+        },
+    },
+    {
+        id: "create_volume_dataset",
+        method: "post",
+        path: "/stacks/:name/storage/volumes",
+        summary: "Create ./path of a stack as a ZFS dataset (the stack must be a dataset; intermediate datasets of a nested path are created too)",
+        description: "Only where nothing exists yet: an existing folder cannot be converted. Use it before adding \"./path:/container/path\" to the compose file. Properties not given come from x-dockge.zfs.<path>, then are inherited.",
+        tag: "Storage",
+        permission: "write",
+        params: {
+            name: stackName,
+            path: {
+                type: "string",
+                description: "Path relative to the stack folder, e.g. ./pgdata",
+            },
+            recordsize: {
+                type: "string",
+                description: "e.g. 16K for databases, 1M for large files",
+            },
+            compression: {
+                type: "string",
+                description: "e.g. LZ4, ZSTD, OFF",
+            },
+            atime: {
+                type: "string",
+                enum: [ "ON", "OFF" ],
+            },
+            quota: {
+                type: "string",
+                description: "e.g. 50G (at least 1G)",
+            },
+            owner: {
+                type: "string",
+                description: "uid or uid:gid of the new dataset (numbers)",
+            },
+            mode: {
+                type: "string",
+                description: "Octal permissions, e.g. 0750",
+            },
+            dryRun: dryRunParam,
+        },
+        required: [ "name", "path" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            if (typeof(args.path) !== "string") {
+                throw new ValidationError("path is required");
+            }
+            const { createVolumeDataset, getCreationContext, isDatasetMount, planVolumeDataset } = await import("../zfs/datasets");
+            const { normalizeVolumePath, parseRecipes, validateRecipe } = await import("../zfs/recipe");
+            const { forgetStackDatasets } = await import("../zfs/storage");
+            const relative = normalizeVolumePath(args.path);
+            const recipe = {
+                ...(parseRecipes(stack.composeYAML).recipes.get(relative) ?? {}),
+                ...validateRecipe({
+                    recordsize: args.recordsize,
+                    compression: args.compression,
+                    atime: args.atime,
+                    quota: args.quota,
+                    owner: args.owner,
+                    mode: args.mode,
+                }, "arguments"),
+            };
+            const { status } = await getCreationContext(server);
+            const steps = planVolumeDataset(status, stack.name, relative);
+            if (args.dryRun === true || args.dryRun === "true") {
+                return {
+                    dryRun: true,
+                    path: "./" + relative,
+                    datasets: steps.map((step) => ({
+                        dataset: step.dataset,
+                        path: "./" + step.path,
+                        intermediate: step.intermediate,
+                    })),
+                    properties: recipe,
+                };
+            }
+            const created = await createVolumeDataset(server, stack.name, relative, recipe);
+            forgetStackDatasets(isDatasetMount(stack.path) ?? "");
+            return {
+                ok: true,
+                ...created,
+            };
         },
     },
     {

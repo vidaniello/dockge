@@ -3,6 +3,7 @@ import { DockgeServer } from "../dockge-server";
 import { callbackError, callbackResult, checkLogin, DockgeSocket, ValidationError } from "../util-server";
 import { Stack } from "../stack";
 import { AgentSocket } from "../../common/agent-socket";
+import { LooseObject } from "../../common/util-common";
 import { listDirectory } from "../file-browser";
 import { getHostIPs } from "../host-ips";
 import {
@@ -11,17 +12,37 @@ import {
 } from "../stack-folders";
 import { imageUpdateChecker } from "../image-update-checker";
 import { log } from "../log";
-import { getStackStorage, getStorageStatus } from "../zfs/storage";
+import { getStackStorage, getStorageStatus, resetProviderCache } from "../zfs/storage";
+import { getZfsSettings, toPublic, updateZfsSettings } from "../zfs/settings";
+
+/**
+ * Handlers that gained an optional options object before the callback: accept both forms
+ */
+function optionsAndCallback(rest : unknown[]) : { options : LooseObject, callback : unknown } {
+    const callback = rest[rest.length - 1];
+    const options = rest.length > 1 && rest[0] && typeof(rest[0]) === "object" ? rest[0] as LooseObject : {};
+    return {
+        options,
+        callback,
+    };
+}
 
 export class DockerSocketHandler extends AgentSocketHandler {
     create(socket : DockgeSocket, server : DockgeServer, agentSocket : AgentSocket) {
         // Do not call super.create()
 
-        agentSocket.on("deployStack", async (name : unknown, composeYAML : unknown, composeENV : unknown, isAdd : unknown, callback) => {
+        // options (optional): { dataset? : boolean, missingVolumes? : MissingVolumesChoice }
+        agentSocket.on("deployStack", async (name : unknown, composeYAML : unknown, composeENV : unknown, isAdd : unknown, ...rest : unknown[]) => {
+            const { options, callback } = optionsAndCallback(rest);
+            let saved = false;
             try {
                 checkLogin(socket);
-                const stack = await this.saveStack(server, name, composeYAML, composeENV, isAdd);
-                await stack.deploy(socket);
+                const stack = await this.saveStack(server, name, composeYAML, composeENV, isAdd, options);
+                saved = true;
+                await stack.deploy(socket, {
+                    missingVolumes: options.missingVolumes,
+                    interactive: true,
+                });
                 server.sendStackList();
                 callbackResult({
                     ok: true,
@@ -30,14 +51,23 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 }, callback);
                 stack.joinCombinedTerminal(socket);
             } catch (e) {
+                if (saved) {
+                    // The stack exists now: a new attempt must not create it again
+                    server.sendStackList();
+                    (e as { data? : object }).data = {
+                        ...((e as { data? : object }).data ?? {}),
+                        saved: true,
+                    };
+                }
                 callbackError(e, callback);
             }
         });
 
-        agentSocket.on("saveStack", async (name : unknown, composeYAML : unknown, composeENV : unknown, isAdd : unknown, callback) => {
+        agentSocket.on("saveStack", async (name : unknown, composeYAML : unknown, composeENV : unknown, isAdd : unknown, ...rest : unknown[]) => {
+            const { options, callback } = optionsAndCallback(rest);
             try {
                 checkLogin(socket);
-                await this.saveStack(server, name, composeYAML, composeENV, isAdd);
+                await this.saveStack(server, name, composeYAML, composeENV, isAdd, options);
                 callbackResult({
                     ok: true,
                     msg: "Saved",
@@ -115,7 +145,8 @@ export class DockerSocketHandler extends AgentSocketHandler {
         });
 
         // startStack
-        agentSocket.on("startStack", async (stackName : unknown, callback) => {
+        agentSocket.on("startStack", async (stackName : unknown, ...rest : unknown[]) => {
+            const { options, callback } = optionsAndCallback(rest);
             try {
                 checkLogin(socket);
 
@@ -124,7 +155,10 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 }
 
                 const stack = await Stack.getStack(server, stackName);
-                await stack.start(socket);
+                await stack.start(socket, {
+                    missingVolumes: options.missingVolumes,
+                    interactive: true,
+                });
                 callbackResult({
                     ok: true,
                     msg: "Started",
@@ -186,7 +220,8 @@ export class DockerSocketHandler extends AgentSocketHandler {
         });
 
         // updateStack
-        agentSocket.on("updateStack", async (stackName : unknown, callback) => {
+        agentSocket.on("updateStack", async (stackName : unknown, ...rest : unknown[]) => {
+            const { options, callback } = optionsAndCallback(rest);
             try {
                 checkLogin(socket);
 
@@ -195,7 +230,10 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 }
 
                 const stack = await Stack.getStack(server, stackName);
-                await stack.update(socket);
+                await stack.update(socket, {
+                    missingVolumes: options.missingVolumes,
+                    interactive: true,
+                });
 
                 // Refresh the update badge of this stack
                 imageUpdateChecker.checkStack(stackName).catch((e) => log.debug("image-update", String(e)));
@@ -267,11 +305,49 @@ export class DockerSocketHandler extends AgentSocketHandler {
         });
 
         // ZFS status of the stacks folder (read-only)
-        agentSocket.on("getStorageStatus", async (callback) => {
+        agentSocket.on("getStorageStatus", async (...rest : unknown[]) => {
+            const { options, callback } = optionsAndCallback(rest);
+            try {
+                checkLogin(socket);
+                if (options.refresh === true) {
+                    resetProviderCache();
+                }
+                callbackResult({
+                    ok: true,
+                    status: await getStorageStatus(server),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // ZFS settings of this instance (the API key of TrueNAS is never sent back)
+        agentSocket.on("getZfsSettings", async (callback) => {
             try {
                 checkLogin(socket);
                 callbackResult({
                     ok: true,
+                    settings: toPublic(await getZfsSettings()),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Save ZFS settings, then check them: the result is the new storage status
+        agentSocket.on("setZfsSettings", async (changes : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (!changes || typeof(changes) !== "object") {
+                    throw new ValidationError("Invalid settings");
+                }
+                const settings = await updateZfsSettings(changes as Record<string, unknown>);
+                resetProviderCache();
+                callbackResult({
+                    ok: true,
+                    msg: "Saved",
+                    msgi18n: true,
+                    settings: toPublic(settings),
                     status: await getStorageStatus(server),
                 }, callback);
             } catch (e) {
@@ -652,7 +728,7 @@ export class DockerSocketHandler extends AgentSocketHandler {
         });
     }
 
-    async saveStack(server : DockgeServer, name : unknown, composeYAML : unknown, composeENV : unknown, isAdd : unknown) : Promise<Stack> {
+    async saveStack(server : DockgeServer, name : unknown, composeYAML : unknown, composeENV : unknown, isAdd : unknown, options : LooseObject = {}) : Promise<Stack> {
         // Check types
         if (typeof(name) !== "string") {
             throw new ValidationError("Name must be a string");
@@ -668,7 +744,9 @@ export class DockerSocketHandler extends AgentSocketHandler {
         }
 
         const stack = new Stack(server, name, composeYAML, composeENV, false);
-        await stack.save(isAdd);
+        await stack.save(isAdd, {
+            dataset: typeof(options.dataset) === "boolean" ? options.dataset : undefined,
+        });
         return stack;
     }
 

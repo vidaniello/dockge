@@ -82,15 +82,15 @@
             </div>
 
             <!-- Storage (ZFS) -->
-            <div v-if="storageStatus && storageStatus.zfs && stack.isManagedByDockge" class="mb-3 storage-line">
-                <font-awesome-icon icon="hard-drive" class="me-1 text-muted" />
+            <div v-if="storageStatus && storageStatus.zfs && stack.isManagedByDockge && !isAdd" class="mb-3 storage-line">
+                <font-awesome-icon icon="hard-drive" class="me-1 storage-icon" />
                 <template v-if="stackStorage && stackStorage.isDataset">
                     <span class="badge bg-success me-2">{{ $t("storageStackIsDataset") }}</span>
                     <code>{{ stackStorage.dataset }}</code>
                 </template>
                 <template v-else-if="stackStorage && !isAdd">
                     <span class="badge bg-secondary me-2">{{ $t("storageStackIsFolder") }}</span>
-                    <span class="text-muted">{{ $t("storageInsideDataset", [ stackStorage.dataset ]) }}</span>
+                    <span class="storage-muted">{{ $t("storageInsideDataset", [ stackStorage.dataset ]) }}</span>
                 </template>
                 <router-link v-if="storageStatus.problems.length > 0" to="/settings/storage" class="badge bg-warning text-dark ms-2 text-decoration-none">
                     <font-awesome-icon icon="exclamation-circle" class="me-1" />
@@ -132,6 +132,13 @@
                                         ({{ $root.agentStatusList[agentEndpoint] }}) {{ (agent.name !== '') ? agent.name : agent.url || $t("Current") }}
                                     </option>
                                 </select>
+                            </div>
+
+                            <!-- ZFS: the folder of the new stack as a dataset -->
+                            <div v-if="storageStatus && storageStatus.canCreate" class="form-check mt-3">
+                                <input id="create-as-dataset" v-model="createAsDataset" class="form-check-input" type="checkbox">
+                                <label class="form-check-label" for="create-as-dataset">{{ $t("createAsDataset") }}</label>
+                                <div class="form-text">{{ $t("createAsDatasetHint", [ `${storageStatus.dataset}/${stack.name || "…"}` ]) }}</div>
                             </div>
                         </div>
                     </div>
@@ -331,7 +338,8 @@
                 {{ $t("stackNotManagedByDockgeMsg") }}
             </div>
 
-            <PathPicker ref="pathPicker" :endpoint="endpoint" />
+            <PathPicker ref="pathPicker" :endpoint="endpoint" :current-stack="stack.name || ''" />
+            <MissingVolumesDialog ref="missingVolumesDialog" />
 
             <!-- Folder Dialog -->
             <BModal v-model="showFolderDialog" :title="$t('moveToFolder')" :cancelTitle="$t('cancel')" :okTitle="$t('moveToFolder')" @ok="setFolder">
@@ -414,6 +422,7 @@ import { BModal } from "bootstrap-vue-next";
 import NetworkInput from "../components/NetworkInput.vue";
 import ExpandableBox from "../components/ExpandableBox.vue";
 import PathPicker from "../components/PathPicker.vue";
+import MissingVolumesDialog from "../components/MissingVolumesDialog.vue";
 import dotenv from "dotenv";
 import { ref } from "vue";
 import { useToast } from "vue-toastification";
@@ -440,6 +449,7 @@ export default {
         NetworkInput,
         ExpandableBox,
         PathPicker,
+        MissingVolumesDialog,
         FontAwesomeIcon,
         CodeMirror,
         BModal,
@@ -450,6 +460,11 @@ export default {
             composeEndpoint: () => this.endpoint,
             // ZFS labels of the volume rows (ArrayInput), null when the stacks folder is not on ZFS
             composeVolumeStorage: (source) => this.volumeStorage(source),
+            // What happens to a missing ./xxx volume at the next deploy (ArrayInput labels)
+            composeMissingVolumesRule: () => this.missingVolumesRule,
+            // Name of the stack, for the path picker (paths inside it become ./relative)
+            composeStackName: () => this.stack.name || "",
+            composeToStackRelative: (picked) => this.toStackRelative(picked),
         };
     },
     beforeRouteUpdate(to, from, next) {
@@ -516,6 +531,8 @@ export default {
             // ZFS (read-only): status of the stacks folder of the endpoint, datasets of the bind mounts
             storageStatus: null,
             stackStorage: null,
+            zfsSettings: null,
+            createAsDataset: true,
         };
     },
     computed: {
@@ -530,6 +547,17 @@ export default {
 
         extensionsEnv() {
             return [ this.editorTheme, this.envLanguage, this.lineNumbersExtension, this.focusEffect ];
+        },
+
+        /**
+         * What the next deploy does with a missing ./xxx volume: "ask", "dataset", "directory",
+         * or null when Dockge does not intervene (Docker creates a folder)
+         */
+        missingVolumesRule() {
+            if (!this.stackStorage?.canCreateDatasets || !this.zfsSettings) {
+                return null;
+            }
+            return this.zfsSettings.missingVolumes;
         },
 
         endpointDisplay() {
@@ -866,6 +894,50 @@ export default {
                 }
                 this.storageStatus = res.ok ? res.status : null;
                 this.scheduleStackStorage(0);
+                if (this.storageStatus?.canCreate) {
+                    this.$root.emitAgent(endpoint, "getZfsSettings", (settingsRes) => {
+                        if (settingsRes.ok && endpoint === this.endpoint) {
+                            this.zfsSettings = settingsRes.settings;
+                            this.createAsDataset = settingsRes.settings.newStacksAsDatasets;
+                        }
+                    });
+                }
+            });
+        },
+
+        /**
+         * Run deployStack / startStack / updateStack; when the backend stops because some ./xxx volumes are missing,
+         * ask what to create and run it again
+         * @param {string} eventName Socket event
+         * @param {Array} args Arguments before the options
+         * @param {object} options Options (dataset, missingVolumes)
+         * @param {Function} done Called with the final response
+         * @returns {void}
+         */
+        emitWithVolumes(eventName, args, options, done) {
+            this.$root.emitAgent(this.endpoint, eventName, ...args, options, async (res) => {
+                if (!res.ok && Array.isArray(res.missingVolumes) && res.missingVolumes.length > 0) {
+                    if (res.saved && this.isAdd) {
+                        // The new stack was saved: the next attempt is not an "add" any more
+                        this.submitted = true;
+                        args = args.map((arg, index) => (eventName === "deployStack" && index === 3 ? false : arg));
+                    }
+                    const choice = await this.$refs.missingVolumesDialog.open(res.missingVolumes);
+                    if (choice) {
+                        this.emitWithVolumes(eventName, args, {
+                            ...options,
+                            missingVolumes: choice,
+                        }, done);
+                        return;
+                    }
+                    done({
+                        ok: false,
+                        msg: "missingVolumesCancelled",
+                        msgi18n: true,
+                    });
+                    return;
+                }
+                done(res);
             });
         },
 
@@ -899,6 +971,22 @@ export default {
          * @param {string} source Host part of the volume
          * @returns {object|null} Entry of getStackStorage
          */
+        /**
+         * A path inside the folder of this stack becomes ./relative (it follows the stack when renamed)
+         * @param {string} picked Absolute path
+         * @returns {string} Path to insert
+         */
+        toStackRelative(picked) {
+            if (!this.storageStatus || !this.stack.name) {
+                return picked;
+            }
+            const stackDir = `${this.storageStatus.stacksDir}/${this.stack.name}`;
+            if (picked.startsWith(stackDir + "/")) {
+                return "./" + picked.slice(stackDir.length + 1);
+            }
+            return picked;
+        },
+
         volumeStorage(source) {
             if (!this.stackStorage || !source) {
                 return null;
@@ -959,11 +1047,16 @@ export default {
 
             this.bindTerminal();
 
-            this.$root.emitAgent(this.stack.endpoint, "deployStack", this.stack.name, this.stack.composeYAML, this.stack.composeENV, this.isAdd, (res) => {
+            const options = this.isAdd && this.storageStatus?.canCreate ? { dataset: this.createAsDataset } : {};
+            this.emitWithVolumes("deployStack", [ this.stack.name, this.stack.composeYAML, this.stack.composeENV, this.isAdd ], options, (res) => {
                 this.processing = false;
                 this.$root.toastRes(res);
 
                 if (res.ok) {
+                    this.isEditMode = false;
+                    this.$router.push(this.url);
+                } else if (this.submitted && !this.$route.params.stackName) {
+                    // Saved but not deployed (volumes cancelled): open the saved stack
                     this.isEditMode = false;
                     this.$router.push(this.url);
                 }
@@ -973,7 +1066,8 @@ export default {
         saveStack() {
             this.processing = true;
 
-            this.$root.emitAgent(this.stack.endpoint, "saveStack", this.stack.name, this.stack.composeYAML, this.stack.composeENV, this.isAdd, (res) => {
+            const options = this.isAdd && this.storageStatus?.canCreate ? { dataset: this.createAsDataset } : {};
+            this.$root.emitAgent(this.stack.endpoint, "saveStack", this.stack.name, this.stack.composeYAML, this.stack.composeENV, this.isAdd, options, (res) => {
                 this.processing = false;
                 this.$root.toastRes(res);
 
@@ -987,7 +1081,7 @@ export default {
         startStack() {
             this.processing = true;
 
-            this.$root.emitAgent(this.endpoint, "startStack", this.stack.name, (res) => {
+            this.emitWithVolumes("startStack", [ this.stack.name ], {}, (res) => {
                 this.processing = false;
                 this.$root.toastRes(res);
             });
@@ -1023,7 +1117,7 @@ export default {
         updateStack() {
             this.processing = true;
 
-            this.$root.emitAgent(this.endpoint, "updateStack", this.stack.name, (res) => {
+            this.emitWithVolumes("updateStack", [ this.stack.name ], {}, (res) => {
                 this.processing = false;
                 this.$root.toastRes(res);
             });
@@ -1035,10 +1129,11 @@ export default {
          */
         async insertHostPath() {
             const view = this.$refs.editor?.view;
-            const picked = await this.$refs.pathPicker.open("");
+            let picked = await this.$refs.pathPicker.open("");
             if (!picked || !view) {
                 return;
             }
+            picked = this.toStackRelative(picked);
             view.dispatch(view.state.replaceSelection(picked));
             view.focus();
             this.$nextTick(() => this.yamlCodeChange());
@@ -1257,6 +1352,15 @@ export default {
 
 <style scoped lang="scss">
 @import "../styles/vars.scss";
+
+.storage-icon,
+.storage-muted {
+    color: #6c757d;
+
+    .dark & {
+        color: $dark-font-color;
+    }
+}
 
 .terminal {
     height: 200px;

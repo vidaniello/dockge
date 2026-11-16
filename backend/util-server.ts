@@ -79,7 +79,10 @@ export function callbackError(error : unknown, callback : unknown) {
 
     // ValidationError extends Error, so it must be checked first
     if (error instanceof ValidationError) {
+        // Structured details for the UI (e.g. the missing volumes to choose for)
+        const data = (error as ValidationError & { data? : object }).data;
         callback({
+            ...(data ?? {}),
             ok: false,
             type: ERROR_TYPE_VALIDATION,
             msg: error.message,

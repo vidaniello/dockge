@@ -24,6 +24,18 @@ import { deleteIn, setStringIn } from "./yaml-text-edit";
 import { analyzeBindMounts, BindMountAnalysis, bindMountWarnings, rewriteBindMounts } from "./bind-mounts";
 import { imageUpdateChecker } from "./image-update-checker";
 
+export interface SaveOptions {
+    /** Create the folder of a new stack as a ZFS dataset (undefined: default of the settings) */
+    dataset? : boolean;
+}
+
+export interface DeployOptions {
+    /** What to do with the missing ./xxx volumes, see MissingVolumesChoice in zfs/volumes.ts */
+    missingVolumes? : unknown;
+    /** The caller can show a dialog: "ask" is allowed */
+    interactive? : boolean;
+}
+
 export class Stack {
 
     name: string;
@@ -264,20 +276,28 @@ export class Stack {
     /**
      * Save the stack to the disk
      * @param isAdd
+     * @param options dataset: create the folder of a new stack as a ZFS dataset (default: the ZFS settings)
      */
-    async save(isAdd : boolean) {
+    async save(isAdd : boolean, options : SaveOptions = {}) {
         this.validate();
 
         let dir = this.path;
 
         // Check if the name is used if isAdd
         if (isAdd) {
+            const zfs = await import("./zfs/datasets");
             if (await fileExists(dir)) {
-                throw new ValidationError("Stack name already exists");
+                // An empty dataset created before the stack (e.g. from TrueNAS) is used as its folder
+                if (!await zfs.isEmptyDatasetFolder(dir)) {
+                    throw new ValidationError("Stack name already exists");
+                }
+                log.info("stack", `Using the empty dataset at ${dir} for the new stack ${this.name}`);
+            } else if (await this.shouldCreateDataset(options.dataset)) {
+                await zfs.createStackDataset(this.server, this.name);
+            } else {
+                // Create the stack folder
+                await fsAsync.mkdir(dir);
             }
-
-            // Create the stack folder
-            await fsAsync.mkdir(dir);
         } else {
             if (!await fileExists(dir)) {
                 throw new ValidationError("Stack not found");
@@ -306,7 +326,50 @@ export class Stack {
         }
     }
 
-    async deploy(socket? : DockgeSocket) : Promise<number> {
+    /**
+     * Whether the folder of a new stack is created as a dataset
+     * @param requested true / false from the caller, undefined for the default of the settings
+     */
+    async shouldCreateDataset(requested : boolean | undefined) : Promise<boolean> {
+        if (requested === false) {
+            return false;
+        }
+        const { getStorageStatus } = await import("./zfs/storage");
+        const status = await getStorageStatus(this.server);
+        if (!status.canCreate) {
+            if (requested === true) {
+                throw new ValidationError(status.zfs ? "The stack cannot be created as a dataset: see Settings → Storage" : "The stacks folder is not on ZFS: the stack cannot be created as a dataset");
+            }
+            return false;
+        }
+        if (requested === true) {
+            return true;
+        }
+        const { getZfsSettings } = await import("./zfs/settings");
+        return (await getZfsSettings()).newStacksAsDatasets;
+    }
+
+    /**
+     * Before docker compose up: create the missing ./xxx volumes as datasets or folders (only when the stack is a
+     * ZFS dataset and Dockge can create datasets). Throws MissingVolumesError when the user must choose.
+     */
+    async prepareVolumes(options : DeployOptions = {}) {
+        const { prepareStackVolumes } = await import("./zfs/volumes");
+        const result = await prepareStackVolumes(this.server, this, options.missingVolumes, options.interactive === true);
+        for (const item of result.plan) {
+            const message = `${item.path} created as ${item.type === "dataset" ? "dataset " + item.datasets[item.datasets.length - 1] : "folder"}`;
+            log.info("stack", `${this.name}: ${message}`);
+            this.outputListener?.(message + "\n");
+        }
+        for (const warning of result.warnings) {
+            log.warn("stack", `${this.name}: ${warning}`);
+            this.outputListener?.("Warning: " + warning + "\n");
+        }
+        return result;
+    }
+
+    async deploy(socket? : DockgeSocket, options : DeployOptions = {}) : Promise<number> {
+        await this.prepareVolumes(options);
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("up", "-d", "--remove-orphans"), this.path, this.outputListener);
         if (exitCode !== 0) {
@@ -359,6 +422,12 @@ export class Stack {
 
         if (newName === this.name) {
             throw new ValidationError("The new name is the same as the current one");
+        }
+
+        const { datasetsInside } = await import("./zfs/datasets");
+        const datasets = datasetsInside(this.path);
+        if (datasets.length > 0) {
+            throw new ValidationError(`The stack folder is (or contains) a ZFS dataset (${datasets.join(", ")}): renaming it is not supported yet. Rename the datasets in TrueNAS instead.`);
         }
 
         const newStack = new Stack(this.server, newName, undefined, undefined, true);
@@ -447,6 +516,13 @@ export class Stack {
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("down", "--remove-orphans"), this.path, this.outputListener);
         if (exitCode !== 0) {
             throw new Error("Failed to delete, please check the terminal output for more information.");
+        }
+
+        // A dataset is kept: rm -rf would empty it (and its child datasets) and fail on the mount points
+        const { datasetsInside } = await import("./zfs/datasets");
+        const datasets = datasetsInside(this.path);
+        if (datasets.length > 0) {
+            throw new ValidationError(`The containers were removed. The stack folder is (or contains) a ZFS dataset (${datasets.join(", ")}): its data was kept. To delete it, destroy the dataset in TrueNAS.`);
         }
 
         // Remove the stack folder
@@ -647,7 +723,8 @@ export class Stack {
         return options;
     }
 
-    async start(socket? : DockgeSocket) {
+    async start(socket? : DockgeSocket, options : DeployOptions = {}) {
+        await this.prepareVolumes(options);
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("up", "-d", "--remove-orphans"), this.path, this.outputListener);
         if (exitCode !== 0) {
@@ -683,7 +760,7 @@ export class Stack {
         return exitCode;
     }
 
-    async update(socket? : DockgeSocket) {
+    async update(socket? : DockgeSocket, options : DeployOptions = {}) {
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("pull"), this.path, this.outputListener);
         if (exitCode !== 0) {
@@ -697,6 +774,7 @@ export class Stack {
             return exitCode;
         }
 
+        await this.prepareVolumes(options);
         exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("up", "-d", "--remove-orphans"), this.path, this.outputListener);
         if (exitCode !== 0) {
             throw new Error("Failed to restart, please check the terminal output for more information.");
