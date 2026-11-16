@@ -21,6 +21,7 @@ import { InteractiveTerminal, Terminal } from "./terminal";
 import childProcessAsync from "promisify-child-process";
 import { Settings } from "./settings";
 import { deleteIn, setStringIn } from "./yaml-text-edit";
+import { analyzeBindMounts, BindMountAnalysis, bindMountWarnings, rewriteBindMounts } from "./bind-mounts";
 import { imageUpdateChecker } from "./image-update-checker";
 
 export class Stack {
@@ -337,13 +338,21 @@ export class Stack {
     }
 
     /**
+     * Bind mounts with an absolute path into this stack's folder (rewritten to relative paths on rename),
+     * and the bind sources with variables that cannot be checked.
+     */
+    getBindMountsInStackFolder() : BindMountAnalysis {
+        return analyzeBindMounts(this.composeYAML, this.path);
+    }
+
+    /**
      * Rename the stack: stop it, rename its folder, start it again if it was running.
      * @param socket Socket
      * @param newName New stack name
      * @param keepVolumes Pin the names of project scoped named volumes (name: <old project>_<volume>) so the data is kept
-     * @returns The renamed stack
+     * @returns The renamed stack, and warnings about what could not be updated
      */
-    async rename(socket : DockgeSocket | undefined, newName: string, keepVolumes: boolean) : Promise<Stack> {
+    async rename(socket : DockgeSocket | undefined, newName: string, keepVolumes: boolean) : Promise<{ stack : Stack, warnings : string[] }> {
         if (!this.isManagedByDockge) {
             throw new ValidationError("Only stacks managed by Dockge can be renamed");
         }
@@ -386,6 +395,16 @@ export class Stack {
                 content = setStringIn(content, [ "volumes", volume, "name" ], `${oldName}_${volume}`);
             }
         }
+
+        // Absolute bind mounts into the stack folder would point to the old folder (and Docker would create it again, empty):
+        // make them relative so they follow this and later renames. Sources with variables are only reported.
+        const binds = analyzeBindMounts(content, this.path);
+        content = rewriteBindMounts(content, binds.rewrites);
+        const warnings = bindMountWarnings(binds.skipped);
+        for (const rewrite of binds.rewrites) {
+            log.info("stack", `Rename ${oldName}: bind mount ${rewrite.from} of service ${rewrite.service} changed to ${rewrite.to}`);
+        }
+
         const changed = content !== originalContent;
 
         // Remove the containers and networks of the old project. Volumes are never removed.
@@ -414,7 +433,13 @@ export class Stack {
         }
 
         log.info("stack", `Renamed stack ${oldName} to ${newName}`);
-        return renamed;
+        for (const warning of warnings) {
+            log.warn("stack", warning);
+        }
+        return {
+            stack: renamed,
+            warnings,
+        };
     }
 
     async delete(socket? : DockgeSocket) : Promise<number> {
