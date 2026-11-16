@@ -229,3 +229,31 @@ export function compareRecipe(recipe : VolumeRecipe, dataset : DatasetInfo) : Pr
     }
     return differences;
 }
+
+/**
+ * Properties to change on an existing dataset. quota: "none" or 0 removes it.
+ */
+export function parseDatasetProperties(raw : Record<string, unknown>) : { recordsize? : string, compression? : string, atime? : "ON" | "OFF", quota? : number } {
+    const { quota, ...rest } = raw;
+    const recipe = validateRecipe(rest, "properties");
+    if (recipe.owner || recipe.mode) {
+        throw new ValidationError("owner and mode are not dataset properties: use set_volume_permissions");
+    }
+    const result : { recordsize? : string, compression? : string, atime? : "ON" | "OFF", quota? : number } = {
+        recordsize: recipe.recordsize,
+        compression: recipe.compression,
+        atime: recipe.atime,
+    };
+    if (quota !== undefined && quota !== null && quota !== "") {
+        if (String(quota).trim().toLowerCase() === "none") {
+            result.quota = 0;
+        } else {
+            const bytes = parseSize(quota) ?? 0;
+            if (bytes !== 0 && bytes < 1024 ** 3) {
+                throw new ValidationError("The quota must be at least 1G (TrueNAS limit), or none");
+            }
+            result.quota = bytes;
+        }
+    }
+    return result;
+}

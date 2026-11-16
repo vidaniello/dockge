@@ -57,11 +57,7 @@ export interface StorageStatus {
     inContainer : boolean;
     /** Propagation of the mount of the stacks folder, null when not in a container or not on ZFS */
     propagation : Propagation | null;
-    host : {
-        truenas : boolean;
-        kernelVersion : string | null;
-        operatingSystem : string | null;
-    };
+    host : HostInfo;
     /** Provider able to create datasets: configured in Settings → Storage */
     provider : "truenas" | null;
     /** User the provider logs in as, when the connection works */
@@ -130,6 +126,8 @@ interface HostInfo {
     truenas : boolean;
     kernelVersion : string | null;
     operatingSystem : string | null;
+    /** Docker runs with userns-remap: UIDs inside containers are shifted on the host */
+    usernsRemap : boolean;
 }
 
 const HOST_INFO_CACHE_MS = 10 * 60 * 1000;
@@ -143,15 +141,17 @@ async function getHostInfo() : Promise<HostInfo> {
         truenas: false,
         kernelVersion: null,
         operatingSystem: null,
+        usernsRemap: false,
     };
     try {
-        const res = await dockerApiGet<{ KernelVersion? : string, OperatingSystem? : string }>("/info");
+        const res = await dockerApiGet<{ KernelVersion? : string, OperatingSystem? : string, SecurityOptions? : string[] }>("/info");
         const kernelVersion = res.KernelVersion ?? null;
         info = {
             // e.g. "6.12.15-production+truenas"
             truenas: /truenas/i.test(kernelVersion ?? "") || /truenas/i.test(res.OperatingSystem ?? ""),
             kernelVersion,
             operatingSystem: res.OperatingSystem ?? null,
+            usernsRemap: (res.SecurityOptions ?? []).some((option) => /name=userns/.test(option)),
         };
     } catch (e) {
         log.debug("storage", "Cannot read the Docker host info: " + (e instanceof Error ? e.message : e));
@@ -241,6 +241,16 @@ export async function getStorageStatus(server : DockgeServer) : Promise<StorageS
                 });
             }
         }
+    }
+
+    if (zfs && host.usernsRemap) {
+        problems.push({
+            code: "usernsRemap",
+            severity: "warning",
+            message: "Docker runs with userns-remap: a UID inside a container is a different UID on the host. Owners entered in Dockge (dialog, x-dockge.zfs) are applied as they are, on the host.",
+            remedy: "Add the offset of the remapping (see /etc/subuid on the host) to the owners, or leave them empty.",
+            params: {},
+        });
     }
 
     const ready = zfs && stacksIsDatasetRoot && (!inContainer || propagation !== "private");
@@ -738,4 +748,40 @@ export function describeHostPaths(entries : string[], stacksDir : string) : Map<
         });
     }
     return result;
+}
+
+/**
+ * Folders of a stack (first level), with their dataset, for the "in this stack" tab of the path picker
+ */
+export async function listStackFolder(server : DockgeServer, stackName : string) : Promise<{ exists : boolean, isDataset : boolean, entries : { name : string, path : string, dataset : string | null }[] }> {
+    const stacksDir = realPath(server.stacksDir);
+    const stackDir = path.join(stacksDir, stackName);
+    if (!fs.existsSync(stackDir)) {
+        return {
+            exists: false,
+            isDataset: false,
+            entries: [],
+        };
+    }
+    const mounts = readMountInfo();
+    const own = mountAt(mounts, stackDir);
+    const entries = [];
+    for (const dirent of await fs.promises.readdir(stackDir, { withFileTypes: true })) {
+        if (!dirent.isDirectory()) {
+            continue;
+        }
+        const target = path.join(stackDir, dirent.name);
+        const mount = mountAt(mounts, target);
+        entries.push({
+            name: dirent.name,
+            path: "./" + dirent.name,
+            dataset: isZfsMount(mount) && mount.root === "/" ? mount.source : null,
+        });
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    return {
+        exists: true,
+        isDataset: isZfsMount(own) && own.root === "/",
+        entries,
+    };
 }

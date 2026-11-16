@@ -1,15 +1,28 @@
 <template>
     <BModal
         v-model="show"
-        :title="$t('missingVolumesTitle')"
-        :okTitle="$t('missingVolumesConfirm')"
+        :title="rows.length > 0 ? $t('missingVolumesTitle') : $t('otherStackBindsTitle')"
+        :okTitle="rows.length > 0 ? $t('missingVolumesConfirm') : $t('otherStackBindsConfirm')"
         :cancelTitle="$t('cancel')"
         size="lg"
         scrollable
         @ok="confirm"
         @hidden="cancelIfOpen"
     >
-        <p>{{ $t("missingVolumesIntro") }}</p>
+        <!-- Bind mounts into the folder of another stack -->
+        <div v-if="otherStackBinds.length > 0" class="alert alert-warning other-stacks">
+            <div class="fw-bold mb-2">{{ $t("otherStackBindsIntro") }}</div>
+            <div v-for="bind in otherStackBinds" :key="bind.path" class="mb-2">
+                <code>{{ bind.path }}</code>
+                <div class="small">
+                    {{ $t("otherStackBindsLine", [ bind.otherStack, bind.services.join(", ") ]) }}
+                    <span v-if="bind.missing">{{ $t("otherStackBindsMissing") }}</span>
+                </div>
+            </div>
+            <div class="small">{{ $t("otherStackBindsHint") }}</div>
+        </div>
+
+        <p v-if="rows.length > 0">{{ $t("missingVolumesIntro") }}</p>
 
         <div v-for="volume in rows" :key="volume.path" class="volume-row">
             <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
@@ -41,7 +54,7 @@
             <div v-if="errorOf(volume)" class="form-text text-danger">{{ errorOf(volume) }}</div>
         </div>
 
-        <div class="form-text mt-3">{{ $t("missingVolumesNote") }}</div>
+        <div v-if="rows.length > 0" class="form-text mt-3">{{ $t("missingVolumesNote") }}</div>
     </BModal>
 </template>
 
@@ -50,8 +63,9 @@ import { BModal } from "bootstrap-vue-next";
 
 /**
  * Before a deploy: choose, for each missing ./xxx volume of a dataset stack, whether to create it as a dataset or a
- * folder, with owner and permissions. Usage: this.$refs.dialog.open(missingVolumes).then(choice => ...)
- * (null when cancelled; otherwise the missingVolumes option of deployStack / startStack / updateStack)
+ * folder, with owner and permissions; confirm the bind mounts into other stacks.
+ * Usage: this.$refs.dialog.open(missingVolumes, otherStackBinds).then(options => ...)
+ * (null when cancelled; otherwise options to add to deployStack / startStack / updateStack)
  */
 export default {
     components: {
@@ -61,11 +75,18 @@ export default {
         return {
             show: false,
             rows: [],
+            otherStackBinds: [],
             resolver: null,
         };
     },
     methods: {
-        open(missingVolumes) {
+        /**
+         * @param {object[]} missingVolumes Volumes to create
+         * @param {object[]} otherStackBinds Bind mounts into other stacks to confirm
+         * @returns {Promise<object|null>} { missingVolumes, acceptOtherStacks } or null when cancelled
+         */
+        open(missingVolumes, otherStackBinds = []) {
+            this.otherStackBinds = otherStackBinds;
             this.rows = missingVolumes.map((volume) => ({
                 ...volume,
                 type: volume.defaultType,
@@ -103,7 +124,10 @@ export default {
             }
             const resolver = this.resolver;
             this.resolver = null;
-            resolver?.(choice);
+            resolver?.({
+                missingVolumes: this.rows.length > 0 ? choice : undefined,
+                acceptOtherStacks: this.otherStackBinds.length > 0 ? true : undefined,
+            });
         },
 
         cancelIfOpen() {
@@ -116,6 +140,11 @@ export default {
 </script>
 
 <style lang="scss" scoped>
+.other-stacks {
+    border-radius: 10px;
+    word-break: break-all;
+}
+
 .volume-row {
     padding: 12px 0;
     border-top: 1px solid rgba(128, 128, 128, 0.25);

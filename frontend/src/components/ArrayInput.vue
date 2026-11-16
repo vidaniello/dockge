@@ -29,9 +29,15 @@
                         <span class="badge ms-2 volume-label" :class="volumeLabel(array[index]).class" :title="volumeLabel(array[index]).title">
                             {{ volumeLabel(array[index]).text }}
                         </span>
-                        <span v-if="volumeLabel(array[index]).differences" class="badge bg-warning text-dark ms-1 volume-label" :title="volumeLabel(array[index]).differences">
+                        <button
+                            v-if="volumeLabel(array[index]).differences"
+                            type="button"
+                            class="badge bg-warning text-dark border-0 ms-1 volume-label"
+                            :title="volumeLabel(array[index]).differences + '\n' + $t('applyRecipeHint')"
+                            @click="askApplyRecipe(getVolumeStorage(volumeHost(array[index])))"
+                        >
                             ≠ x-dockge.zfs
-                        </span>
+                        </button>
                     </template>
                     <font-awesome-icon v-if="browse" icon="folder-open" class="action browse ms-2" :title="$t('pickHostPath')" @click="browsePath(index)" />
                     <font-awesome-icon icon="times" class="action remove ms-2 me-3 text-danger" @click="remove(index)" />
@@ -80,6 +86,18 @@ export default {
         toStackRelative: {
             from: "composeToStackRelative",
             default: () => (picked) => picked,
+        },
+        askApplyRecipe: {
+            from: "composeAskApplyRecipe",
+            default: () => () => {},
+        },
+        setVolumeRecipe: {
+            from: "composeSetVolumeRecipe",
+            default: () => () => {},
+        },
+        isZfsStack: {
+            from: "composeIsZfsStack",
+            default: () => () => false,
         },
     },
     props: {
@@ -345,6 +363,54 @@ export default {
         },
 
         /**
+         * Options of the path picker: the "in this stack" tab, with the owner suggested by the service
+         * @returns {object} Options
+         */
+        pickerOptions() {
+            if (this.objectType !== "service") {
+                return {};
+            }
+            const numeric = (value) => (/^\d+(:\d+)?$/.test(String(value ?? "").trim()) ? String(value).trim() : "");
+            let suggestedOwner = numeric(this.service.user);
+            if (!suggestedOwner) {
+                const environment = this.service.environment;
+                const read = (key) => {
+                    if (Array.isArray(environment)) {
+                        const line = environment.find((item) => String(item).startsWith(key + "="));
+                        return line ? String(line).slice(key.length + 1) : "";
+                    }
+                    return environment?.[key] ?? "";
+                };
+                const puid = numeric(read("PUID"));
+                const pgid = numeric(read("PGID"));
+                suggestedOwner = puid ? (pgid ? `${puid}:${pgid}` : puid) : "";
+            }
+            return {
+                stackTab: true,
+                zfs: this.isZfsStack(),
+                suggestedOwner,
+            };
+        },
+
+        /**
+         * Path to insert for what the picker returned; a new volume of the stack also gets its x-dockge.zfs entry
+         * @param {string|object|null} picked Host path, or { relative, recipe }
+         * @returns {string|null} Path
+         */
+        pickedPath(picked) {
+            if (!picked) {
+                return null;
+            }
+            if (typeof picked === "object") {
+                if (picked.recipe) {
+                    this.setVolumeRecipe(picked.relative.replace(/^\.\//, ""), picked.recipe);
+                }
+                return picked.relative;
+            }
+            return this.toStackRelative(picked);
+        },
+
+        /**
          * Replace the host part of a row with the equivalent relative path
          * @param {number} index Row
          * @param {string} relative "./library"
@@ -368,21 +434,19 @@ export default {
             const separator = value.indexOf(":");
             const host = separator >= 0 ? value.slice(0, separator) : value;
 
-            let picked = await this.$refs.picker.open(host);
+            let picked = this.pickedPath(await this.$refs.picker.open(host, this.pickerOptions()));
             if (!picked) {
                 return;
             }
-            picked = this.toStackRelative(picked);
 
             this.array[index] = separator >= 0 ? picked + value.slice(separator) : picked + ":";
         },
 
         async addBrowsedField() {
-            let picked = await this.$refs.picker.open("");
+            const picked = this.pickedPath(await this.$refs.picker.open("", this.pickerOptions()));
             if (!picked) {
                 return;
             }
-            picked = this.toStackRelative(picked);
             if (!this.service[this.name]) {
                 this.service[this.name] = [];
             }

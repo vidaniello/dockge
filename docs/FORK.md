@@ -16,7 +16,7 @@ Dataset ZFS per stack e volumi: in corso, vedi [ZFS-DESIGN.md](ZFS-DESIGN.md). D
 - **Impostazioni → Archiviazione**: filesystem della cartella degli stack, dataset, se la cartella è la radice del dataset, propagazione del mount, host TrueNAS, spazio libero, eventuali problemi con il rimedio.
 - Se la cartella degli stack è su ZFS, la pagina dello stack mostra se lo stack è un dataset e, nell'editor, ogni volume ha un'etichetta: `dataset`, `cartella`, `mancante: Docker crea una cartella`, `dataset esterno`, `nello stack X`, `non visibile`. Un percorso assoluto dentro lo stack propone il relativo (`./nome`) con un clic.
 - Il selettore di percorsi mostra il dataset montato su ogni cartella e a quale stack appartiene.
-- API: `get_storage_status`, `get_stack_storage`, `create_volume_dataset`; `get_info` riassume lo stato; `list_host_paths` aggiunge `dataset` e `stack`; `create_stack` accetta `dataset`, `deploy_stack` / `start_stack` / `update_stack` accettano `missingVolumes` e `dryRun`.
+- API: `get_storage_status`, `get_stack_storage`, `create_volume_dataset`, `set_dataset_properties`, `set_volume_permissions`; `get_info` riassume lo stato; `list_host_paths` aggiunge `dataset` e `stack`; `create_stack` accetta `dataset`, `deploy_stack` / `start_stack` / `update_stack` accettano `missingVolumes` e `dryRun`.
 
 ### Creazione dei dataset (TrueNAS)
 
@@ -34,7 +34,9 @@ x-dockge:
     pgdata:  { recordsize: 16K, owner: "999:999", mode: "0700" }
 ```
 
-   Sui dataset esistenti Dockge non cambia niente: se le proprietà differiscono, l'editor mostra `≠ x-dockge.zfs`.
+   Sui dataset esistenti Dockge non cambia niente da solo: se le proprietà differiscono, l'editor mostra `≠ x-dockge.zfs`; un clic sul badge le applica al dataset (dopo conferma).
+- **Aggiungi percorso** nei volumi apre il selettore con due schede: **In questo stack** (cartelle e dataset dello stack, oppure un nuovo volume `./nome` con tipo Generico / Database / File grandi e proprietario, scritti in `x-dockge.zfs`; il dataset nasce al deploy) e **Cartella dell'host**. Se all'utente TrueNAS dai anche il ruolo `FILESYSTEM_ATTRS_READ`, la scheda dell'host legge tutto l'host dall'API, senza montare `/mnt` in Dockge.
+- Prima di deploy / avvio / aggiornamento, se un volume punta dentro la cartella di **un altro stack** Dockge lo segnala (una volta per percorso): i due stack restano legati.
 - Rinomina ed eliminazione di uno stack che è (o contiene) un dataset non sono ancora gestite: la rinomina viene rifiutata, l'eliminazione rimuove i container e conserva i dati. Il dataset si rinomina o distrugge da TrueNAS.
 - Per vedere i dataset creati sull'host dopo l'avvio di Dockge, la cartella degli stack va montata con `propagation: rslave`:
 
