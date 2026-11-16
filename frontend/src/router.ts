@@ -16,6 +16,7 @@ import General from "./components/settings/General.vue";
 const Security = () => import("./components/settings/Security.vue");
 const GlobalEnv = () => import("./components/settings/GlobalEnv.vue");
 const ApiKeys = () => import("./components/settings/ApiKeys.vue");
+const Storage = () => import("./components/settings/Storage.vue");
 import About from "./components/settings/About.vue";
 
 const routes = [
@@ -87,6 +88,10 @@ const routes = [
                             {
                                 path: "apiKeys",
                                 component: ApiKeys,
+                            },
+                            {
+                                path: "storage",
+                                component: Storage,
                             },
                             {
                                 path: "about",

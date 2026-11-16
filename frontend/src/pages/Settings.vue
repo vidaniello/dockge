@@ -89,6 +89,9 @@ export default {
                 apiKeys: {
                     title: this.$t("apiKeys"),
                 },
+                storage: {
+                    title: this.$t("storage"),
+                },
                 about: {
                     title: this.$t("About"),
                 },

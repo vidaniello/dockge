@@ -53,7 +53,7 @@ function fromInterfaces(interfaces : NodeJS.Dict<os.NetworkInterfaceInfo[]>) : H
     });
 }
 
-function isInContainer() : boolean {
+export function isInContainer() : boolean {
     return fs.existsSync("/.dockerenv") || process.env.DOCKGE_IS_CONTAINER === "1";
 }
 

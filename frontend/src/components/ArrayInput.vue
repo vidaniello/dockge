@@ -16,6 +16,20 @@
                         </option>
                     </select>
                     <input v-model="array[index]" type="text" class="no-bg domain-input" :placeholder="placeholder" />
+                    <template v-if="browse && volumeLabel(array[index])">
+                        <button
+                            v-if="volumeLabel(array[index]).relative"
+                            type="button"
+                            class="badge bg-info text-dark border-0 ms-2 volume-label"
+                            :title="$t('storageUseRelativeHint', [ volumeLabel(array[index]).relative ])"
+                            @click="useRelative(index, volumeLabel(array[index]).relative)"
+                        >
+                            {{ volumeLabel(array[index]).relative }}
+                        </button>
+                        <span class="badge ms-2 volume-label" :class="volumeLabel(array[index]).class" :title="volumeLabel(array[index]).title">
+                            {{ volumeLabel(array[index]).text }}
+                        </span>
+                    </template>
                     <font-awesome-icon v-if="browse" icon="folder-open" class="action browse ms-2" :title="$t('pickHostPath')" @click="browsePath(index)" />
                     <font-awesome-icon icon="times" class="action remove ms-2 me-3 text-danger" @click="remove(index)" />
                 </li>
@@ -46,6 +60,11 @@ export default {
         getEndpoint: {
             from: "composeEndpoint",
             default: () => () => "",
+        },
+        // Provided by Compose.vue: ZFS information of a bind source, null when not on ZFS
+        getVolumeStorage: {
+            from: "composeVolumeStorage",
+            default: () => () => null,
         },
     },
     props: {
@@ -226,6 +245,91 @@ export default {
         },
 
         /**
+         * Host part of a short syntax volume, "" for a named volume or an anonymous one
+         * @param {string} value "HOST:CONTAINER[:mode]"
+         * @returns {string} Host part
+         */
+        volumeHost(value) {
+            const text = String(value ?? "");
+            // The first ":" outside of "${VAR:-default}"
+            let depth = 0;
+            for (let i = 0; i < text.length; i++) {
+                if (text[i] === "$" && text[i + 1] === "{") {
+                    depth++;
+                    i++;
+                } else if (text[i] === "}" && depth > 0) {
+                    depth--;
+                } else if (text[i] === ":" && depth === 0) {
+                    const host = text.slice(0, i);
+                    return /^[/.~$]/.test(host) ? host : "";
+                }
+            }
+            return "";
+        },
+
+        /**
+         * ZFS label of a volume row
+         * @param {string} value "HOST:CONTAINER[:mode]"
+         * @returns {object|null} { text, class, title, relative }
+         */
+        volumeLabel(value) {
+            const host = this.volumeHost(value);
+            const info = host ? this.getVolumeStorage(host) : null;
+            if (!info) {
+                return null;
+            }
+            // An absolute path into the stack folder: suggest the relative one, it survives a rename
+            const relative = info.location === "stack" && !host.startsWith(".") && info.relative && !info.isStackFolder ? info.relative : null;
+            const label = (text, cls, title) => ({
+                text,
+                class: cls,
+                title,
+                relative,
+            });
+
+            if (info.location === "otherStack") {
+                return label(this.$t("storageLabelOtherStack", [ info.otherStack ]), "bg-warning text-dark", this.$t("storageLabelOtherStackHint"));
+            }
+            switch (info.kind) {
+                case "dataset":
+                    if (info.location === "stack") {
+                        return label(this.$t("storageLabelDataset"), "bg-success", info.dataset);
+                    }
+                    return label(this.$t("storageLabelExternalDataset"), "bg-primary", info.dataset);
+                case "directory":
+                    if (!info.zfs) {
+                        return null;
+                    }
+                    return label(this.$t("storageLabelDirectory"), "bg-secondary", this.$t("storageLabelDirectoryHint", [ info.dataset ]));
+                case "missing":
+                    if (info.location !== "stack") {
+                        return label(this.$t("storageLabelMissing"), "bg-warning text-dark", info.hostPath);
+                    }
+                    return label(this.$t("storageLabelMissingInStack"), "bg-warning text-dark", this.$t("storageLabelMissingInStackHint"));
+                case "file":
+                    return label(this.$t("storageLabelFile"), "bg-light text-dark", info.dataset ?? "");
+                case "notVisible":
+                    return label(this.$t("storageLabelNotVisible"), "bg-light text-dark", this.$t("storageLabelNotVisibleHint"));
+                default:
+                    return null;
+            }
+        },
+
+        /**
+         * Replace the host part of a row with the equivalent relative path
+         * @param {number} index Row
+         * @param {string} relative "./library"
+         * @returns {void}
+         */
+        useRelative(index, relative) {
+            const value = String(this.array[index] ?? "");
+            const host = this.volumeHost(value);
+            if (host) {
+                this.array[index] = relative + value.slice(host.length);
+            }
+        },
+
+        /**
          * Replace the host part of "HOST:CONTAINER[:mode]" with a folder picked from the host
          * @param {number} index Row
          * @returns {Promise<void>}
@@ -258,6 +362,15 @@ export default {
 </script>
 
 <style lang="scss" scoped>
+.volume-label {
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+button.volume-label {
+    cursor: pointer;
+}
+
 @import "../styles/vars.scss";
 
 .browse {

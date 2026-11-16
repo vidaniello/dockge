@@ -81,6 +81,23 @@
                 </a>
             </div>
 
+            <!-- Storage (ZFS) -->
+            <div v-if="storageStatus && storageStatus.zfs && stack.isManagedByDockge" class="mb-3 storage-line">
+                <font-awesome-icon icon="hard-drive" class="me-1 text-muted" />
+                <template v-if="stackStorage && stackStorage.isDataset">
+                    <span class="badge bg-success me-2">{{ $t("storageStackIsDataset") }}</span>
+                    <code>{{ stackStorage.dataset }}</code>
+                </template>
+                <template v-else-if="stackStorage && !isAdd">
+                    <span class="badge bg-secondary me-2">{{ $t("storageStackIsFolder") }}</span>
+                    <span class="text-muted">{{ $t("storageInsideDataset", [ stackStorage.dataset ]) }}</span>
+                </template>
+                <router-link v-if="storageStatus.problems.length > 0" to="/settings/storage" class="badge bg-warning text-dark ms-2 text-decoration-none">
+                    <font-awesome-icon icon="exclamation-circle" class="me-1" />
+                    {{ $tc("storageProblemsLink", storageStatus.problems.length) }}
+                </router-link>
+            </div>
+
             <!-- Progress Terminal -->
             <transition name="slide-fade" appear>
                 <Terminal
@@ -415,6 +432,7 @@ const envDefault = "# VARIABLE=value #comment";
 let yamlErrorTimeout = null;
 
 let serviceStatusTimeout = null;
+let stackStorageTimeout = null;
 let dockerStatsTimeout = null;
 
 export default {
@@ -430,6 +448,8 @@ export default {
         return {
             // Used by the volume path picker (ArrayInput)
             composeEndpoint: () => this.endpoint,
+            // ZFS labels of the volume rows (ArrayInput), null when the stacks folder is not on ZFS
+            composeVolumeStorage: (source) => this.volumeStorage(source),
         };
     },
     beforeRouteUpdate(to, from, next) {
@@ -493,6 +513,9 @@ export default {
             renameKeepVolumes: true,
             renameBindRewrites: [],
             renameBindSkipped: [],
+            // ZFS (read-only): status of the stacks folder of the endpoint, datasets of the bind mounts
+            storageStatus: null,
+            stackStorage: null,
         };
     },
     computed: {
@@ -641,8 +664,17 @@ export default {
                     console.debug("yaml code changed");
                     this.yamlCodeChange();
                 }
+                this.scheduleStackStorage();
             },
             deep: true,
+        },
+
+        isEditMode() {
+            this.scheduleStackStorage();
+        },
+
+        endpoint() {
+            this.loadStorageStatus();
         },
 
         "stack.composeENV": {
@@ -724,8 +756,10 @@ export default {
 
         this.requestServiceStatus();
         this.requestDockerStats();
+        this.loadStorageStatus();
     },
     unmounted() {
+        clearTimeout(stackStorageTimeout);
 
     },
     methods: {
@@ -822,6 +856,57 @@ export default {
                     }
                 });
             });
+        },
+
+        loadStorageStatus() {
+            const endpoint = this.endpoint;
+            this.$root.emitAgent(endpoint, "getStorageStatus", (res) => {
+                if (endpoint !== this.endpoint) {
+                    return;
+                }
+                this.storageStatus = res.ok ? res.status : null;
+                this.scheduleStackStorage(0);
+            });
+        },
+
+        /**
+         * Reload the datasets of the bind mounts, after the user stops typing.
+         * In edit mode the draft is analyzed; otherwise the saved stack (docker compose config resolves the variables).
+         * @param {number} delay Milliseconds
+         * @returns {void}
+         */
+        scheduleStackStorage(delay = 800) {
+            clearTimeout(stackStorageTimeout);
+            if (!this.storageStatus?.zfs || !/^[a-z0-9_-]+$/.test(this.stack.name || "")) {
+                this.stackStorage = null;
+                return;
+            }
+            stackStorageTimeout = setTimeout(() => {
+                const endpoint = this.endpoint;
+                const name = this.stack.name;
+                const draft = this.isEditMode ? this.stack.composeYAML : null;
+                this.$root.emitAgent(endpoint, "getStackStorage", name, draft, (res) => {
+                    if (endpoint !== this.endpoint || name !== this.stack.name) {
+                        return;
+                    }
+                    this.stackStorage = res.ok ? res.storage : null;
+                });
+            }, delay);
+        },
+
+        /**
+         * Storage of a bind source as written in a volume row ("./library", "/mnt/tank/media")
+         * @param {string} source Host part of the volume
+         * @returns {object|null} Entry of getStackStorage
+         */
+        volumeStorage(source) {
+            if (!this.stackStorage || !source) {
+                return null;
+            }
+            const normalized = source.replace(/\/+$/, "") || source;
+            return this.stackStorage.volumes.find((volume) =>
+                volume.source === source || volume.source === normalized || volume.hostPath === normalized || volume.relative === normalized
+            ) ?? null;
         },
 
         bindTerminal() {

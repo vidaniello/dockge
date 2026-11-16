@@ -11,6 +11,7 @@ import {
 } from "../stack-folders";
 import { imageUpdateChecker } from "../image-update-checker";
 import { log } from "../log";
+import { getStackStorage, getStorageStatus } from "../zfs/storage";
 
 export class DockerSocketHandler extends AgentSocketHandler {
     create(socket : DockgeSocket, server : DockgeServer, agentSocket : AgentSocket) {
@@ -258,7 +259,44 @@ export class DockerSocketHandler extends AgentSocketHandler {
 
                 callbackResult({
                     ok: true,
-                    ...(await listDirectory(dirPath, showFiles === true)),
+                    ...(await listDirectory(dirPath, showFiles === true, server.stacksDir)),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // ZFS status of the stacks folder (read-only)
+        agentSocket.on("getStorageStatus", async (callback) => {
+            try {
+                checkLogin(socket);
+                callbackResult({
+                    ok: true,
+                    status: await getStorageStatus(server),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Datasets / folders of the bind mounts of a stack. composeYAML (optional): analyze the draft of the editor
+        agentSocket.on("getStackStorage", async (stackName : unknown, composeYAML : unknown, callback) => {
+            try {
+                checkLogin(socket);
+
+                if (typeof(stackName) !== "string" || !stackName) {
+                    throw new ValidationError("Stack name must be a string");
+                }
+                if (composeYAML !== undefined && composeYAML !== null && typeof(composeYAML) !== "string") {
+                    throw new ValidationError("composeYAML must be a string");
+                }
+                if (!/^[a-z0-9_-]+$/.test(stackName)) {
+                    throw new ValidationError("Invalid stack name");
+                }
+
+                callbackResult({
+                    ok: true,
+                    storage: await getStackStorage(server, stackName, typeof(composeYAML) === "string" ? composeYAML : undefined),
                 }, callback);
             } catch (e) {
                 callbackError(e, callback);

@@ -42,7 +42,7 @@ function isInside(child : string, parent : string) : boolean {
 /**
  * "$$" is an escaped dollar sign, anything else with "$" is interpolated by compose
  */
-function hasVariable(value : string) : boolean {
+export function hasVariable(value : string) : boolean {
     return value.replace(/\$\$/g, "").includes("$");
 }
 
@@ -57,7 +57,7 @@ function toRelative(source : string, stackDir : string) : string {
 /**
  * Split a short syntax volume "HOST:CONTAINER[:mode]" into its host part and the rest (":CONTAINER[:mode]")
  */
-function splitShort(volume : string) : { host : string, rest : string } | undefined {
+export function splitShort(volume : string) : { host : string, rest : string } | undefined {
     // The first ":" that is not inside a "${VAR:-default}"
     let index = -1;
     let depth = 0;

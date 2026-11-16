@@ -1,6 +1,6 @@
 # Design: dataset ZFS per stack e volumi
 
-Stato: **proposta**, niente è ancora implementato.
+Stato: fase 1 (rilevamento e sola lettura) implementata; fasi 2–4 da fare (§13).
 
 Obiettivo: quando la cartella degli stack è su ZFS (in particolare su TrueNAS SCALE), Dockge crea e gestisce i dataset di stack e volumi. Nel compose si scrivono percorsi relativi (`./library`) invece di `/mnt/pool/...`, e diventano possibili snapshot, rollback e clone per stack.
 
@@ -313,7 +313,7 @@ Le operazioni sono definite una sola volta in `backend/api/operations.ts` ed esp
 
 ## 13. Fasi
 
-1. **Rilevamento e sola lettura**: stato ZFS e propagazione, avvisi (§5), etichette sui volumi nell'editor e nel selettore, `get_storage_status` / `get_stack_storage`, inversione dei testi API/MCP.
+1. **Rilevamento e sola lettura**: stato ZFS e propagazione, avvisi (§5), etichette sui volumi nell'editor e nel selettore, `get_storage_status` / `get_stack_storage`, inversione dei testi API/MCP. **Fatta** (`backend/zfs/`, Impostazioni → Archiviazione). Rimandati alla fase 2 perché richiedono le proprietà dei dataset, quindi il provider: avviso ACL NFSv4 + `aclmode=restricted`, proprietà e differenze con `x-dockge.zfs`, dataset vuoto usato per un nuovo stack.
 2. **Creazione**: provider TrueNAS, nuovi stack come dataset, volumi creati prima del deploy con proprietà e permessi, scheda "In questo stack", selettore alimentato dall'API di TrueNAS.
 3. **Snapshot**: manuali, automatici prima di "Aggiorna", rollback, clone.
 4. **Migrazioni**: conversione guidata di cartelle e stack esistenti, adozione di dataset esterni, rinomina ed eliminazione consapevoli dei dataset, procedura per la cartella stacks (§5.1), recupero di dati nascosti.

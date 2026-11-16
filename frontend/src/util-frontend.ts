@@ -231,3 +231,39 @@ export async function copyToClipboard(text : string) : Promise<boolean> {
     activeElement?.focus?.();
     return ok;
 }
+
+/**
+ * 1536 → "1.5 KiB"
+ */
+export function formatBytes(bytes : number) : string {
+    const units = [ "B", "KiB", "MiB", "GiB", "TiB", "PiB" ];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit++;
+    }
+    return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+interface StorageProblem {
+    code : string;
+    message : string;
+    remedy : string;
+    params : Record<string, string>;
+}
+
+type Translate = (key : string, params? : unknown) => string;
+type TranslationExists = (key : string, locale? : string) => boolean;
+
+/**
+ * Translated message ("storageProblem") or remedy ("storageRemedy") of a problem returned by getStorageStatus,
+ * falling back to the English text of the backend
+ */
+export function storageProblemText(t : Translate, te : TranslationExists, problem : StorageProblem, prefix : "storageProblem" | "storageRemedy") : string {
+    const key = `${prefix}_${problem.code}`;
+    if (te(key, "en")) {
+        return t(key, problem.params);
+    }
+    return prefix === "storageProblem" ? problem.message : problem.remedy;
+}
