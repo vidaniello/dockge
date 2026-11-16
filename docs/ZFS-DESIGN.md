@@ -1,6 +1,6 @@
 # Design: dataset ZFS per stack e volumi
 
-Stato: fase 1 implementata; fase 2 implementata tranne la scheda "In questo stack" del selettore e le operazioni API sui permessi e sulle proprietà (§13); fasi 3–4 da fare.
+Stato: fasi 1 e 2 implementate; fasi 3–4 da fare (§13).
 
 Obiettivo: quando la cartella degli stack è su ZFS (in particolare su TrueNAS SCALE), Dockge crea e gestisce i dataset di stack e volumi. Nel compose si scrivono percorsi relativi (`./library`) invece di `/mnt/pool/...`, e diventano possibili snapshot, rollback e clone per stack.
 
@@ -319,7 +319,7 @@ Le operazioni sono definite una sola volta in `backend/api/operations.ts` ed esp
 2. **Creazione**: provider TrueNAS, nuovi stack come dataset, volumi creati prima del deploy con proprietà e permessi, scheda "In questo stack", selettore alimentato dall'API di TrueNAS. Nel selettore, il badge "stack X" va mostrato solo se la cartella contiene un compose; il selettore deve sapere da quale stack è aperto: per le cartelle di quello stack il badge diventa "questo stack" e il percorso scelto viene inserito come `./nome`.
    **Fatto**: client JSON-RPC (`backend/zfs/truenas-client.ts`, solo `wss://`, impronta del certificato), impostazioni per endpoint, nuovi stack come dataset (anche riusando un dataset vuoto creato prima), controllo dei volumi mancanti prima di deploy / avvio / aggiorna con la regola chiedi / dataset / cartella e il dialogo, `x-dockge.zfs` (recordsize, compression, atime, quota, owner, mode) con le differenze mostrate nell'editor, proprietario suggerito da `user:` / `PUID` / immagine, avvisi su ACL restricted e su mountpoint diverso, badge del selettore, `create_volume_dataset` e `dryRun` nelle API.
    Nel frattempo, rinomina ed eliminazione di uno stack che contiene dataset vengono rifiutate (l'eliminazione rimuove i container e conserva i dati) fino alla fase 4.
-   **Da fare**: scheda "In questo stack" con preset, selettore alimentato da `pool.dataset.query`, `set_volume_permissions` / `set_dataset_properties`, rilevamento di `userns-remap`.
+   Completata con: avviso al deploy per i bind dentro **un altro stack** (dialogo nell'interfaccia, chiesto una volta per percorso; `warnings` nelle API), scheda "In questo stack" del selettore (cartelle e dataset dello stack, nuovo volume con tipo Generico / Database 16K / File grandi 1M e proprietario, scritto in `x-dockge.zfs`), selettore che legge l'host da `filesystem.listdir` quando l'utente TrueNAS ha anche `FILESYSTEM_ATTRS_READ` (altrimenti le cartelle montate in Dockge), `set_dataset_properties` (via `pool.dataset.update`) e `set_volume_permissions` (eseguito da Dockge, ricorsivo solo per il proprietario e senza entrare nei dataset figli), clic sul badge `≠ x-dockge.zfs` per applicare i valori al dataset, avviso per `userns-remap` (gli UID non vengono tradotti).
 3. **Snapshot**: manuali, automatici prima di "Aggiorna", rollback, clone.
 4. **Migrazioni**: conversione guidata di cartelle e stack esistenti, adozione di dataset esterni, rinomina ed eliminazione consapevoli dei dataset, procedura per la cartella stacks (§5.1), recupero di dati nascosti.
 

@@ -2,6 +2,7 @@ import { promises as fsAsync } from "fs";
 import path from "path";
 import { ValidationError } from "./util-server";
 import { describeHostPaths } from "./zfs/storage";
+import { log } from "./log";
 
 /**
  * Read-only folder browser used by the "pick a host path" dialog of the volume fields.
@@ -26,6 +27,10 @@ export interface DirectoryListing {
     path: string;
     parent: string | null;
     entries: DirectoryEntry[];
+    /** "truenas": read through the TrueNAS API (the folder does not need to be mounted into Dockge) */
+    source?: "local" | "truenas";
+    /** Why the TrueNAS API could not be used (local view shown instead) */
+    remoteError?: string;
 }
 
 const MAX_ENTRIES = 2000;
@@ -67,14 +72,85 @@ async function existingRoots(roots : string[]) : Promise<string[]> {
  * @param stacksDir Stacks folder, to tell which entries belong to a stack
  */
 export async function listDirectory(requestedPath : string, showFiles = false, stacksDir? : string) : Promise<DirectoryListing> {
-    const listing = await readListing(requestedPath, showFiles);
+    // With the TrueNAS API configured the whole host is visible, without mounting /mnt into Dockge.
+    // Without the role FILESYSTEM_ATTRS_READ (or another error) the local view is used.
+    let listing : DirectoryListing | null = null;
+    let remoteDatasets : Map<string, string> | null = null;
+    let remoteError : string | undefined;
+    try {
+        const remote = await readRemoteListing(requestedPath, showFiles);
+        if (remote) {
+            listing = remote.listing;
+            remoteDatasets = remote.datasets;
+        }
+    } catch (e) {
+        if (e instanceof ValidationError) {
+            throw e;
+        }
+        remoteError = e instanceof Error ? e.message : String(e);
+        log.debug("file-browser", "TrueNAS listing failed, using the local view: " + remoteError);
+    }
+    if (!listing) {
+        listing = await readListing(requestedPath, showFiles);
+        listing.source = "local";
+        listing.remoteError = remoteError;
+    }
     if (stacksDir) {
         const info = describeHostPaths(listing.entries.map((entry) => entry.path), stacksDir);
         for (const entry of listing.entries) {
             Object.assign(entry, info.get(entry.path));
+            const dataset = remoteDatasets?.get(entry.path);
+            if (dataset) {
+                entry.dataset = dataset;
+            }
         }
     }
     return listing;
+}
+
+async function readRemoteListing(requestedPath : string, showFiles : boolean) : Promise<{ listing : DirectoryListing, datasets : Map<string, string> } | null> {
+    const { getZfsSettings } = await import("./zfs/settings");
+    const { getProvider } = await import("./zfs/provider");
+    const provider = getProvider(await getZfsSettings());
+    if (!provider) {
+        return null;
+    }
+    const roots = getBrowseRoots();
+    if (!requestedPath) {
+        return {
+            listing: {
+                roots,
+                path: "",
+                parent: null,
+                entries: roots.map((root) => ({
+                    name: root,
+                    path: root,
+                    isDirectory: true,
+                })),
+                source: "truenas",
+            },
+            datasets: new Map(),
+        };
+    }
+    if (!path.isAbsolute(requestedPath)) {
+        throw new ValidationError("The path must be absolute");
+    }
+    const resolved = path.posix.normalize(requestedPath).replace(/\/+$/, "") || "/";
+    const root = roots.find((candidate) => isInside(resolved, candidate));
+    if (!root) {
+        throw new ValidationError("This folder is outside of the browsable folders (DOCKGE_BROWSE_ROOTS)");
+    }
+    const { entries, datasets } = await provider.listHostDirectory(resolved, showFiles);
+    return {
+        listing: {
+            roots,
+            path: resolved,
+            parent: resolved === root ? null : path.posix.dirname(resolved),
+            entries: entries.slice(0, MAX_ENTRIES).sort((a, b) => (a.isDirectory === b.isDirectory ? a.name.localeCompare(b.name) : a.isDirectory ? -1 : 1)),
+            source: "truenas",
+        },
+        datasets,
+    };
 }
 
 async function readListing(requestedPath : string, showFiles : boolean) : Promise<DirectoryListing> {

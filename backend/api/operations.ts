@@ -166,7 +166,10 @@ async function volumePlan(server : DockgeServer, stack : Stack, missingVolumes :
     try {
         return {
             dryRun: true,
-            ...(await prepareStackVolumes(server, stack, missingVolumes, false, true)),
+            ...(await prepareStackVolumes(server, stack, {
+                missingVolumes,
+                dryRun: true,
+            })),
         };
     } catch (e) {
         if (e instanceof MissingVolumesError) {
@@ -988,6 +991,103 @@ export const operations : Operation[] = [
                 ok: true,
                 ...created,
             };
+        },
+    },
+    {
+        id: "set_dataset_properties",
+        method: "put",
+        path: "/stacks/:name/storage/properties",
+        summary: "Change ZFS properties of a dataset of a stack (recordsize, compression, atime, quota)",
+        description: "path: ./volume, or . for the dataset of the stack. recordsize only affects data written afterwards. Does not edit x-dockge.zfs.",
+        tag: "Storage",
+        permission: "write",
+        params: {
+            name: stackName,
+            path: {
+                type: "string",
+                description: "./volume or .",
+            },
+            recordsize: {
+                type: "string",
+            },
+            compression: {
+                type: "string",
+            },
+            atime: {
+                type: "string",
+                enum: [ "ON", "OFF" ],
+            },
+            quota: {
+                type: "string",
+                description: "e.g. 50G, or none to remove it",
+            },
+            dryRun: dryRunParam,
+        },
+        required: [ "name", "path" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            if (typeof(args.path) !== "string") {
+                throw new ValidationError("path is required");
+            }
+            const { setDatasetProperties, isDatasetMount } = await import("../zfs/datasets");
+            const { parseDatasetProperties } = await import("../zfs/recipe");
+            const { forgetStackDatasets } = await import("../zfs/storage");
+            const properties = parseDatasetProperties({
+                recordsize: args.recordsize,
+                compression: args.compression,
+                atime: args.atime,
+                quota: args.quota,
+            });
+            const result = await setDatasetProperties(server, stack.name, args.path, properties, args.dryRun === true || args.dryRun === "true");
+            forgetStackDatasets(isDatasetMount(stack.path) ?? "");
+            return result;
+        },
+    },
+    {
+        id: "set_volume_permissions",
+        method: "put",
+        path: "/stacks/:name/storage/permissions",
+        summary: "Change owner and permissions of a folder or dataset of a stack",
+        description: "path: ./volume, or . for the stack folder. recursive changes the owner of the content too, without entering child datasets; mode applies to the folder itself only.",
+        tag: "Storage",
+        permission: "write",
+        params: {
+            name: stackName,
+            path: {
+                type: "string",
+                description: "./volume or .",
+            },
+            owner: {
+                type: "string",
+                description: "uid or uid:gid (numbers)",
+            },
+            mode: {
+                type: "string",
+                description: "Octal, e.g. 0750",
+            },
+            recursive: {
+                type: "boolean",
+                default: false,
+            },
+            dryRun: dryRunParam,
+        },
+        required: [ "name", "path" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            if (typeof(args.path) !== "string") {
+                throw new ValidationError("path is required");
+            }
+            const { setVolumePermissions } = await import("../zfs/datasets");
+            const { validateRecipe } = await import("../zfs/recipe");
+            const checked = validateRecipe({
+                owner: args.owner,
+                mode: args.mode,
+            }, "arguments");
+            return setVolumePermissions(server, stack.name, args.path, {
+                owner: checked.owner,
+                mode: checked.mode,
+                recursive: args.recursive === true || args.recursive === "true",
+            }, args.dryRun === true || args.dryRun === "true");
         },
     },
     {

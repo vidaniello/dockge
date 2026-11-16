@@ -5,6 +5,7 @@ import { apiName, dockerApiGet } from "../docker-api";
 import { log } from "../log";
 import { getStackStorage, getStorageStatus, loadComposeConfig, forgetStackDatasets } from "./storage";
 import { getZfsSettings } from "./settings";
+import { Settings } from "../settings";
 import { createVolumeDataset, createVolumeDirectory, isDatasetMount, planVolumeDataset } from "./datasets";
 import { parseRecipes, validateRecipe, VolumeRecipe } from "./recipe";
 
@@ -58,16 +59,99 @@ export interface PrepareResult {
     warnings : string[];
 }
 
-/** The deploy is stopped until the user (or the API caller) chooses what to do with these volumes */
-export class MissingVolumesError extends ValidationError {
-    data : { missingVolumes : MissingVolume[] };
+/** A bind mount that points into the folder of another stack (docs/ZFS-DESIGN.md §9) */
+export interface OtherStackBind {
+    /** Absolute path */
+    path : string;
+    otherStack : string;
+    services : string[];
+    /** Docker creates it as a plain folder at the next deploy */
+    missing : boolean;
+}
 
-    constructor(public missingVolumes : MissingVolume[]) {
-        super(`These volumes do not exist yet: ${missingVolumes.map((volume) => volume.path).join(", ")}. Choose whether to create them as datasets or folders (missingVolumes: "dataset" | "directory").`);
+/**
+ * The deploy is stopped until the user (or the API caller) chooses what to do with the missing volumes, and/or
+ * confirms the bind mounts into other stacks (only asked once per path)
+ */
+export class MissingVolumesError extends ValidationError {
+    data : { missingVolumes : MissingVolume[], otherStackBinds : OtherStackBind[] };
+
+    constructor(public missingVolumes : MissingVolume[], public otherStackBinds : OtherStackBind[] = []) {
+        const parts : string[] = [];
+        if (missingVolumes.length > 0) {
+            parts.push(`These volumes do not exist yet: ${missingVolumes.map((volume) => volume.path).join(", ")}. Choose whether to create them as datasets or folders (missingVolumes: "dataset" | "directory").`);
+        }
+        if (otherStackBinds.length > 0) {
+            parts.push(`These bind mounts point into the folder of another stack: ${otherStackBinds.map((bind) => `${bind.path} (stack ${bind.otherStack})`).join(", ")}.`);
+        }
+        super(parts.join(" "));
         this.data = {
             missingVolumes,
+            otherStackBinds,
         };
     }
+}
+
+export interface PrepareOptions {
+    /** See MissingVolumesChoice; undefined: the rule of the settings */
+    missingVolumes? : unknown;
+    /** The user confirmed the bind mounts into other stacks */
+    acceptOtherStacks? : boolean;
+    /** The caller can ask the user ("ask" is allowed, other stack binds are confirmed); otherwise they are warnings */
+    interactive? : boolean;
+    /** Only return the plan */
+    dryRun? : boolean;
+}
+
+const ACK_KEY = "zfsOtherStackBindsAck";
+
+async function getAcknowledged(stackName : string) : Promise<string[]> {
+    try {
+        const value = await Settings.get(ACK_KEY);
+        const list = value && typeof value === "object" ? (value as Record<string, unknown>)[stackName] : undefined;
+        return Array.isArray(list) ? list.map(String) : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+async function acknowledge(stackName : string, paths : string[]) {
+    let value : Record<string, string[]> = {};
+    try {
+        const stored = await Settings.get(ACK_KEY);
+        if (stored && typeof stored === "object") {
+            value = stored as Record<string, string[]>;
+        }
+    } catch (e) {
+        // first time
+    }
+    value[stackName] = [ ...new Set([ ...(value[stackName] ?? []), ...paths ]) ];
+    await Settings.set(ACK_KEY, value);
+}
+
+/**
+ * Bind mounts of a saved stack into the folders of other stacks. Works whatever the filesystem.
+ */
+export async function findOtherStackBinds(server : DockgeServer, stack : Stack) : Promise<OtherStackBind[]> {
+    let storage;
+    try {
+        storage = await getStackStorage(server, stack.name);
+    } catch (e) {
+        return [];
+    }
+    return storage.volumes
+        .filter((volume) => volume.location === "otherStack" && volume.hostPath && volume.otherStack)
+        .map((volume) => ({
+            path: volume.hostPath as string,
+            otherStack: volume.otherStack as string,
+            services: volume.services,
+            missing: volume.kind === "missing",
+        }));
+}
+
+function otherStackWarning(bind : OtherStackBind) : string {
+    return `${bind.path} is in the folder of the stack ${bind.otherStack}: the two stacks stay tied (deleting or rolling back ${bind.otherStack} changes it)` +
+        (bind.missing ? "; it does not exist, Docker creates it as a plain folder" : "") + ". For data of this stack use ./name.";
 }
 
 const FILE_NAME = /\.(ya?ml|json|conf|cfg|ini|toml|xml|env|sh|txt|js|py|php|lua|properties|db|sqlite|pem|crt|key)$/i;
@@ -259,25 +343,40 @@ function parseChoice(value : unknown) : MissingVolumesChoice | undefined {
  * @param interactive The caller can ask the user ("ask" is allowed); otherwise "ask" becomes "fail"
  * @param dryRun Only return the plan
  */
-export async function prepareStackVolumes(server : DockgeServer, stack : Stack, rawChoice : unknown, interactive : boolean, dryRun = false) : Promise<PrepareResult> {
+export async function prepareStackVolumes(server : DockgeServer, stack : Stack, options : PrepareOptions = {}) : Promise<PrepareResult> {
     const result : PrepareResult = {
         plan: [],
         warnings: [],
     };
-    let choice = parseChoice(rawChoice) ?? (await getZfsSettings()).missingVolumes;
+    const interactive = options.interactive === true;
+    const dryRun = options.dryRun === true;
+    let choice = parseChoice(options.missingVolumes) ?? (await getZfsSettings()).missingVolumes;
     if (choice === "ask" && !interactive) {
         choice = "fail";
     }
 
-    const { missing } = await findMissingVolumes(server, stack);
-    if (missing.length === 0) {
-        return result;
+    // Bind mounts into other stacks: confirmed once per path in the UI, always a warning for the API
+    const otherStackBinds = await findOtherStackBinds(server, stack);
+    result.warnings.push(...otherStackBinds.map(otherStackWarning));
+    let toConfirm : OtherStackBind[] = [];
+    if (interactive && otherStackBinds.length > 0 && options.acceptOtherStacks !== true) {
+        const acknowledged = await getAcknowledged(stack.name);
+        toConfirm = otherStackBinds.filter((bind) => !acknowledged.includes(bind.path));
     }
+
+    const { missing } = await findMissingVolumes(server, stack);
 
     const decisions = missing.map((volume) => decisionFor(choice, volume));
     const undecided = missing.filter((_volume, index) => decisions[index] === null);
-    if (undecided.length > 0) {
-        throw new MissingVolumesError(undecided);
+    if (undecided.length > 0 || toConfirm.length > 0) {
+        // The dialog shows all the missing volumes, not only the undecided ones
+        throw new MissingVolumesError(undecided.length > 0 ? missing : [], toConfirm);
+    }
+    if (interactive && options.acceptOtherStacks === true && otherStackBinds.length > 0 && !dryRun) {
+        await acknowledge(stack.name, otherStackBinds.map((bind) => bind.path));
+    }
+    if (missing.length === 0) {
+        return result;
     }
 
     const status = await getStorageStatus(server);

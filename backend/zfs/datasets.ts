@@ -6,7 +6,7 @@ import { ValidationError } from "../util-server";
 import { log } from "../log";
 import { mountAt, mountsInside, readMountInfo } from "./mountinfo";
 import { getZfsSettings } from "./settings";
-import { getProvider, ZfsProvider } from "./provider";
+import { DatasetProperties, getProvider, ZfsProvider } from "./provider";
 import { normalizeVolumePath, recipeToCreateOptions, VolumeRecipe } from "./recipe";
 import { getStorageStatus, StorageStatus } from "./storage";
 
@@ -243,4 +243,126 @@ export async function createVolumeDirectory(stackDir : string, relative : string
     await fsAsync.mkdir(target, { recursive: true });
     await applyOwnerAndMode(target, recipe, warnings);
     return warnings;
+}
+
+/**
+ * Path of ./relative (or "." for the stack folder) inside a stack, checked
+ */
+function stackTarget(status : StorageStatus, stackName : string, relative : string) : { target : string, display : string } {
+    const stackDir = path.join(status.stacksDir, stackName);
+    if (relative.trim() === "." || relative.trim() === "./") {
+        return {
+            target: stackDir,
+            display: ".",
+        };
+    }
+    const clean = normalizeVolumePath(relative);
+    return {
+        target: path.join(stackDir, clean),
+        display: "./" + clean,
+    };
+}
+
+/**
+ * Change ZFS properties of a dataset of a stack (the stack dataset itself with ".")
+ */
+export async function setDatasetProperties(server : DockgeServer, stackName : string, relative : string, properties : DatasetProperties, dryRun = false) {
+    const { status, provider } = await getCreationContext(server);
+    const { target, display } = stackTarget(status, stackName, relative);
+    const dataset = isDatasetMount(target);
+    if (!dataset) {
+        throw new ValidationError(`${display} is not a dataset`);
+    }
+    checkSubtree(status, dataset);
+    if (Object.values(properties).every((value) => value === undefined)) {
+        throw new ValidationError("No property to change (recordsize, compression, atime, quota)");
+    }
+    if (!dryRun) {
+        log.info("zfs", `Updating dataset ${dataset}: ${JSON.stringify(properties)}`);
+        await provider.updateDataset(dataset, properties);
+    }
+    return {
+        path: display,
+        dataset,
+        properties,
+        dryRun,
+        note: properties.recordsize ? "recordsize applies to data written from now on, existing files keep their record size" : undefined,
+    };
+}
+
+/**
+ * Change owner and permissions of a folder or dataset of a stack. Done by Dockge itself (root in its container).
+ * recursive: the owner only, inside the same filesystem (child datasets are not entered, like setperm of TrueNAS);
+ * mode is applied to the folder itself only (the same mode on files and folders would be wrong).
+ */
+export async function setVolumePermissions(server : DockgeServer, stackName : string, relative : string, options : { owner? : string, mode? : string, recursive? : boolean }, dryRun = false) {
+    const stacksDir = fs.realpathSync(server.stacksDir);
+    const status = {
+        stacksDir,
+    } as StorageStatus;
+    const { target, display } = stackTarget(status, stackName, relative);
+    let stat : fs.Stats;
+    try {
+        stat = await fsAsync.lstat(target);
+    } catch (e) {
+        throw new ValidationError(`${display} does not exist`);
+    }
+    if (!stat.isDirectory()) {
+        throw new ValidationError(`${display} is not a folder`);
+    }
+    // A symbolic link in the middle of the path must not lead outside the stack
+    const realStack = fs.realpathSync(path.join(stacksDir, stackName));
+    const realTarget = fs.realpathSync(target);
+    if (realTarget !== realStack && !realTarget.startsWith(realStack + path.sep)) {
+        throw new ValidationError(`${display} is outside the stack folder`);
+    }
+    if (!options.owner && !options.mode) {
+        throw new ValidationError("Give owner and/or mode");
+    }
+    const result = {
+        path: display,
+        owner: options.owner ?? null,
+        mode: options.mode ?? null,
+        recursive: options.recursive === true,
+        changed: 0,
+        warnings: [] as string[],
+        dryRun,
+    };
+    if (dryRun) {
+        return result;
+    }
+    await applyOwnerAndMode(target, {
+        owner: options.owner,
+        mode: options.mode,
+    }, result.warnings);
+    result.changed = 1;
+
+    if (options.recursive && options.owner) {
+        const [ uid, gid ] = options.owner.split(":").map(Number);
+        const device = stat.dev;
+        const walk = async (dir : string) => {
+            for (const entry of await fsAsync.readdir(dir, { withFileTypes: true })) {
+                const child = path.join(dir, entry.name);
+                const childStat = await fsAsync.lstat(child);
+                if (childStat.dev !== device) {
+                    // Another dataset (or mount): not entered
+                    continue;
+                }
+                try {
+                    await fsAsync.lchown(child, uid, gid ?? uid);
+                    result.changed++;
+                } catch (e) {
+                    if (result.warnings.length < 20) {
+                        result.warnings.push(`${child}: ${e instanceof Error ? e.message : e}`);
+                    }
+                }
+                if (childStat.isDirectory()) {
+                    await walk(child);
+                }
+            }
+        };
+        await walk(target);
+    }
+    log.info("zfs", `Permissions of ${display} in stack ${stackName}: owner ${options.owner ?? "-"}, mode ${options.mode ?? "-"}, recursive ${options.recursive === true}, ${result.changed} entries`);
+    return result;
 }

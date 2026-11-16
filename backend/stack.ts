@@ -32,8 +32,10 @@ export interface SaveOptions {
 export interface DeployOptions {
     /** What to do with the missing ./xxx volumes, see MissingVolumesChoice in zfs/volumes.ts */
     missingVolumes? : unknown;
-    /** The caller can show a dialog: "ask" is allowed */
+    /** The caller can show a dialog: "ask" is allowed, bind mounts into other stacks are confirmed */
     interactive? : boolean;
+    /** The user confirmed the bind mounts into other stacks */
+    acceptOtherStacks? : boolean;
 }
 
 export class Stack {
@@ -355,7 +357,7 @@ export class Stack {
      */
     async prepareVolumes(options : DeployOptions = {}) {
         const { prepareStackVolumes } = await import("./zfs/volumes");
-        const result = await prepareStackVolumes(this.server, this, options.missingVolumes, options.interactive === true);
+        const result = await prepareStackVolumes(this.server, this, options);
         for (const item of result.plan) {
             const message = `${item.path} created as ${item.type === "dataset" ? "dataset " + item.datasets[item.datasets.length - 1] : "folder"}`;
             log.info("stack", `${this.name}: ${message}`);

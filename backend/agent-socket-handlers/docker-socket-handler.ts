@@ -41,6 +41,7 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 saved = true;
                 await stack.deploy(socket, {
                     missingVolumes: options.missingVolumes,
+                    acceptOtherStacks: options.acceptOtherStacks === true,
                     interactive: true,
                 });
                 server.sendStackList();
@@ -157,6 +158,7 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 const stack = await Stack.getStack(server, stackName);
                 await stack.start(socket, {
                     missingVolumes: options.missingVolumes,
+                    acceptOtherStacks: options.acceptOtherStacks === true,
                     interactive: true,
                 });
                 callbackResult({
@@ -232,6 +234,7 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 const stack = await Stack.getStack(server, stackName);
                 await stack.update(socket, {
                     missingVolumes: options.missingVolumes,
+                    acceptOtherStacks: options.acceptOtherStacks === true,
                     interactive: true,
                 });
 
@@ -349,6 +352,47 @@ export class DockerSocketHandler extends AgentSocketHandler {
                     msgi18n: true,
                     settings: toPublic(settings),
                     status: await getStorageStatus(server),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Apply properties to an existing dataset of a stack (e.g. the values of x-dockge.zfs)
+        agentSocket.on("setDatasetProperties", async (stackName : unknown, volumePath : unknown, properties : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (typeof(stackName) !== "string" || typeof(volumePath) !== "string" || !properties || typeof(properties) !== "object") {
+                    throw new ValidationError("Invalid arguments");
+                }
+                const stack = await Stack.getStack(server, stackName);
+                const { setDatasetProperties, isDatasetMount } = await import("../zfs/datasets");
+                const { parseDatasetProperties } = await import("../zfs/recipe");
+                const { forgetStackDatasets } = await import("../zfs/storage");
+                const result = await setDatasetProperties(server, stack.name, volumePath, parseDatasetProperties(properties as Record<string, unknown>));
+                forgetStackDatasets(isDatasetMount(stack.path) ?? "");
+                callbackResult({
+                    ok: true,
+                    msg: "Saved",
+                    msgi18n: true,
+                    result,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Folders of a stack, for the "in this stack" tab of the path picker
+        agentSocket.on("listStackFolder", async (stackName : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (typeof(stackName) !== "string" || !/^[a-z0-9_-]+$/.test(stackName)) {
+                    throw new ValidationError("Invalid stack name");
+                }
+                const { listStackFolder } = await import("../zfs/storage");
+                callbackResult({
+                    ok: true,
+                    ...(await listStackFolder(server, stackName)),
                 }, callback);
             } catch (e) {
                 callbackError(e, callback);

@@ -37,6 +37,24 @@ export interface ZfsProvider {
     /** A dataset and, with children, all its descendants */
     getDatasets(name : string, children : boolean) : Promise<DatasetInfo[]>;
     createDataset(name : string, options : CreateDatasetOptions) : Promise<void>;
+    /** Change properties of an existing dataset (quota 0 = no quota) */
+    updateDataset(name : string, properties : DatasetProperties) : Promise<void>;
+    /** Content of a folder of the host, and the datasets mounted in it (for the path picker) */
+    listHostDirectory(dirPath : string, showFiles : boolean) : Promise<{ entries : HostEntry[], datasets : Map<string, string> }>;
+}
+
+export interface HostEntry {
+    name : string;
+    path : string;
+    isDirectory : boolean;
+}
+
+export interface DatasetProperties {
+    recordsize? : string;
+    compression? : string;
+    atime? : "ON" | "OFF";
+    /** Bytes, 0 = none */
+    quota? : number;
 }
 
 type RawProperty = { value? : unknown, rawvalue? : unknown, source? : unknown } | string | null | undefined;
@@ -142,6 +160,56 @@ export class TrueNasProvider implements ZfsProvider {
             payload.quota = options.quota;
         }
         await TrueNasClient.with(this.connection, (client) => client.call("pool.dataset.create", [ payload ]));
+    }
+
+    async listHostDirectory(dirPath : string, showFiles : boolean) : Promise<{ entries : HostEntry[], datasets : Map<string, string> }> {
+        return TrueNasClient.with(this.connection, async (client) => {
+            const list = await client.call<{ name : string, path : string, type : string }[]>("filesystem.listdir", [
+                dirPath,
+                showFiles ? [[ "type", "in", [ "DIRECTORY", "FILE" ]]] : [[ "type", "=", "DIRECTORY" ]],
+                {
+                    order_by: [ "name" ],
+                    limit: 2000,
+                },
+            ]);
+            const datasets = new Map<string, string>();
+            const all = await client.call<unknown[]>("pool.dataset.query", [
+                [],
+                {
+                    extra: {
+                        retrieve_children: false,
+                        properties: [ "mountpoint" ],
+                        retrieve_user_props: false,
+                    },
+                },
+            ]);
+            for (const dataset of flatten(Array.isArray(all) ? all : [])) {
+                if (typeof dataset.mountpoint === "string" && dataset.mountpoint) {
+                    datasets.set(dataset.mountpoint, String(dataset.name ?? dataset.id));
+                }
+            }
+            return {
+                entries: (Array.isArray(list) ? list : []).map((entry) => ({
+                    name: entry.name,
+                    path: entry.path,
+                    isDirectory: entry.type === "DIRECTORY",
+                })),
+                datasets,
+            };
+        });
+    }
+
+    async updateDataset(name : string, properties : DatasetProperties) : Promise<void> {
+        const payload : Record<string, unknown> = {};
+        for (const key of [ "recordsize", "compression", "atime", "quota" ] as const) {
+            if (properties[key] !== undefined) {
+                payload[key] = properties[key];
+            }
+        }
+        if (Object.keys(payload).length === 0) {
+            return;
+        }
+        await TrueNasClient.with(this.connection, (client) => client.call("pool.dataset.update", [ name, payload ]));
     }
 }
 

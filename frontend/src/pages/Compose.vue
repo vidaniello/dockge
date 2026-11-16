@@ -341,6 +341,25 @@
             <PathPicker ref="pathPicker" :endpoint="endpoint" :current-stack="stack.name || ''" />
             <MissingVolumesDialog ref="missingVolumesDialog" />
 
+            <!-- Apply x-dockge.zfs to an existing dataset -->
+            <BModal
+                v-model="showApplyRecipe"
+                :title="$t('applyRecipeTitle')"
+                :okTitle="$t('applyRecipeConfirm')"
+                :cancelTitle="$t('cancel')"
+                @ok="applyRecipe"
+            >
+                <template v-if="applyRecipeVolume">
+                    <p>{{ $t("applyRecipeIntro", [ applyRecipeVolume.relative, applyRecipeVolume.dataset ]) }}</p>
+                    <ul>
+                        <li v-for="item in applyRecipeVolume.differences" :key="item.property">
+                            <code>{{ item.property }}</code>: {{ item.actual }} → <b>{{ item.expected }}</b>
+                        </li>
+                    </ul>
+                    <div v-if="applyRecipeVolume.differences.some((item) => item.property === 'recordsize')" class="form-text">{{ $t("applyRecipeRecordsize") }}</div>
+                </template>
+            </BModal>
+
             <!-- Folder Dialog -->
             <BModal v-model="showFolderDialog" :title="$t('moveToFolder')" :cancelTitle="$t('cancel')" :okTitle="$t('moveToFolder')" @ok="setFolder">
                 <label for="stack-folder" class="form-label">{{ $t("folder") }}</label>
@@ -465,6 +484,12 @@ export default {
             // Name of the stack, for the path picker (paths inside it become ./relative)
             composeStackName: () => this.stack.name || "",
             composeToStackRelative: (picked) => this.toStackRelative(picked),
+            // Ask to apply x-dockge.zfs to an existing dataset (ArrayInput, badge "≠ x-dockge.zfs")
+            composeAskApplyRecipe: (volume) => this.askApplyRecipe(volume),
+            // New volume from the path picker: write its properties in x-dockge.zfs
+            composeSetVolumeRecipe: (name, recipe) => this.setVolumeRecipe(name, recipe),
+            // The stack is (or will be) a dataset and Dockge can create its volumes as datasets
+            composeIsZfsStack: () => !!(this.stackStorage?.canCreateDatasets || (this.isAdd && this.storageStatus?.canCreate && this.createAsDataset)),
         };
     },
     beforeRouteUpdate(to, from, next) {
@@ -532,6 +557,8 @@ export default {
             storageStatus: null,
             stackStorage: null,
             zfsSettings: null,
+            showApplyRecipe: false,
+            applyRecipeVolume: null,
             createAsDataset: true,
         };
     },
@@ -916,17 +943,20 @@ export default {
          */
         emitWithVolumes(eventName, args, options, done) {
             this.$root.emitAgent(this.endpoint, eventName, ...args, options, async (res) => {
-                if (!res.ok && Array.isArray(res.missingVolumes) && res.missingVolumes.length > 0) {
+                const missing = Array.isArray(res.missingVolumes) ? res.missingVolumes : [];
+                const otherStacks = Array.isArray(res.otherStackBinds) ? res.otherStackBinds : [];
+                if (!res.ok && (missing.length > 0 || otherStacks.length > 0)) {
                     if (res.saved && this.isAdd) {
                         // The new stack was saved: the next attempt is not an "add" any more
                         this.submitted = true;
                         args = args.map((arg, index) => (eventName === "deployStack" && index === 3 ? false : arg));
                     }
-                    const choice = await this.$refs.missingVolumesDialog.open(res.missingVolumes);
+                    const choice = await this.$refs.missingVolumesDialog.open(missing, otherStacks);
                     if (choice) {
                         this.emitWithVolumes(eventName, args, {
                             ...options,
-                            missingVolumes: choice,
+                            ...(choice.missingVolumes ? { missingVolumes: choice.missingVolumes } : {}),
+                            ...(choice.acceptOtherStacks ? { acceptOtherStacks: true } : {}),
                         }, done);
                         return;
                     }
@@ -971,6 +1001,40 @@ export default {
          * @param {string} source Host part of the volume
          * @returns {object|null} Entry of getStackStorage
          */
+        setVolumeRecipe(name, recipe) {
+            if (!this.jsonConfig["x-dockge"] || typeof this.jsonConfig["x-dockge"] !== "object") {
+                this.jsonConfig["x-dockge"] = {};
+            }
+            const xDockge = this.jsonConfig["x-dockge"];
+            if (!xDockge.zfs || typeof xDockge.zfs !== "object") {
+                xDockge.zfs = {};
+            }
+            xDockge.zfs[name] = {
+                ...(xDockge.zfs[name] ?? {}),
+                ...recipe,
+            };
+        },
+
+        askApplyRecipe(volume) {
+            if (!volume?.differences?.length || !volume.relative) {
+                return;
+            }
+            this.applyRecipeVolume = volume;
+            this.showApplyRecipe = true;
+        },
+
+        applyRecipe() {
+            const volume = this.applyRecipeVolume;
+            const properties = {};
+            for (const item of volume.differences) {
+                properties[item.property] = item.expected;
+            }
+            this.$root.emitAgent(this.endpoint, "setDatasetProperties", this.stack.name, volume.relative, properties, (res) => {
+                this.$root.toastRes(res);
+                this.scheduleStackStorage(0);
+            });
+        },
+
         /**
          * A path inside the folder of this stack becomes ./relative (it follows the stack when renamed)
          * @param {string} picked Absolute path
