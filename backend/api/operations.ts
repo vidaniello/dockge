@@ -8,6 +8,7 @@ import { listDirectory } from "../file-browser";
 import { getHostIPs } from "../host-ips";
 import { ApiPermission } from "./api-keys";
 import packageJSON from "../../package.json";
+import { getStackStorage, getStorageStatus, getStorageSummary } from "../zfs/storage";
 import {
     addFolders, deleteFolder, deleteFolderOrder, getStoredFolders, removeFromOrder, renameFolderInOrder, renameStackInOrder, renameStoredFolders,
     validateFolder
@@ -202,6 +203,7 @@ export const operations : Operation[] = [
             name: "Dockge",
             version: packageJSON.version,
             stacksDir: server.stacksDir,
+            storage: await getStorageSummary(server),
             documentation: "/api/v1/openapi.json",
         }),
     },
@@ -255,7 +257,7 @@ export const operations : Operation[] = [
         method: "post",
         path: "/stacks",
         summary: "Create a new stack from a compose.yaml (and optional .env), optionally deploy it",
-        description: "The stack is created in <stacks dir>/<name>. Use absolute host paths for bind mounts (see list_host_paths).",
+        description: "The stack is created in <stacks dir>/<name>. For the data of the stack use paths relative to the stack folder (./data:/data): they follow the stack when it is renamed and, on ZFS, can be datasets of the stack (see get_stack_storage). Use absolute host paths (list_host_paths) only for data shared with other stacks or outside the stacks folder (media library, shares, backups, devices).",
         tag: "Stacks",
         permission: "write",
         params: {
@@ -764,7 +766,8 @@ export const operations : Operation[] = [
         id: "list_host_paths",
         method: "get",
         path: "/host/paths",
-        summary: "Browse the host folders mounted into Dockge (DOCKGE_BROWSE_ROOTS), to choose absolute paths for bind mounts",
+        summary: "Browse the host folders mounted into Dockge (DOCKGE_BROWSE_ROOTS), to choose absolute paths for bind mounts of shared or external data",
+        description: "Every entry tells the ZFS dataset mounted on it (dataset) and the stack whose folder contains it (stack). The data of a single stack belongs in its own folder (./name), not here.",
         tag: "Host",
         permission: "read",
         readOnly: true,
@@ -779,7 +782,7 @@ export const operations : Operation[] = [
                 default: false,
             },
         },
-        handler: async (args) => listDirectory(typeof(args.path) === "string" ? args.path : "", args.showFiles === true || args.showFiles === "true"),
+        handler: async (args, server) => listDirectory(typeof(args.path) === "string" ? args.path : "", args.showFiles === true || args.showFiles === "true", server.stacksDir),
     },
     {
         id: "list_host_ips",
@@ -791,6 +794,36 @@ export const operations : Operation[] = [
         readOnly: true,
         params: {},
         handler: async () => getHostIPs(),
+    },
+    {
+        id: "get_storage_status",
+        method: "get",
+        path: "/storage",
+        summary: "ZFS status of the stacks folder: dataset, whether it is the root of its dataset, mount propagation, TrueNAS host, problems with their remedy",
+        description: "Read only. Nothing is created yet: stacks and volumes as datasets need ready=true.",
+        tag: "Storage",
+        permission: "read",
+        readOnly: true,
+        params: {},
+        handler: async (_args, server) => getStorageStatus(server),
+    },
+    {
+        id: "get_stack_storage",
+        method: "get",
+        path: "/stacks/:name/storage",
+        summary: "Storage of a stack: whether its folder is a ZFS dataset and, for every bind mount, the services using it and its kind (dataset / directory / file / missing / notVisible / unresolved) and location (stack / otherStack / external)",
+        description: "A missing path inside the stack folder is created by Docker as a plain folder at the next deploy. Paths are resolved with docker compose config when the compose file is valid.",
+        tag: "Storage",
+        permission: "read",
+        readOnly: true,
+        params: {
+            name: stackName,
+        },
+        required: [ "name" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            return getStackStorage(server, stack.name);
+        },
     },
     {
         id: "list_networks",

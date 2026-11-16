@@ -1,6 +1,7 @@
 import { promises as fsAsync } from "fs";
 import path from "path";
 import { ValidationError } from "./util-server";
+import { describeHostPaths } from "./zfs/storage";
 
 /**
  * Read-only folder browser used by the "pick a host path" dialog of the volume fields.
@@ -14,6 +15,10 @@ export interface DirectoryEntry {
     name: string;
     path: string;
     isDirectory: boolean;
+    /** ZFS dataset mounted on this folder */
+    dataset?: string | null;
+    /** Stack whose folder contains this path */
+    stack?: string | null;
 }
 
 export interface DirectoryListing {
@@ -59,8 +64,20 @@ async function existingRoots(roots : string[]) : Promise<string[]> {
  * List a folder. An empty path lists the roots.
  * @param requestedPath Absolute path
  * @param showFiles Also list files (a single file can be bind mounted too)
+ * @param stacksDir Stacks folder, to tell which entries belong to a stack
  */
-export async function listDirectory(requestedPath : string, showFiles = false) : Promise<DirectoryListing> {
+export async function listDirectory(requestedPath : string, showFiles = false, stacksDir? : string) : Promise<DirectoryListing> {
+    const listing = await readListing(requestedPath, showFiles);
+    if (stacksDir) {
+        const info = describeHostPaths(listing.entries.map((entry) => entry.path), stacksDir);
+        for (const entry of listing.entries) {
+            Object.assign(entry, info.get(entry.path));
+        }
+    }
+    return listing;
+}
+
+async function readListing(requestedPath : string, showFiles : boolean) : Promise<DirectoryListing> {
     const configuredRoots = getBrowseRoots();
     const roots = await existingRoots(configuredRoots);
 

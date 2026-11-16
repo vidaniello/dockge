@@ -33,6 +33,7 @@ declare module 'vue' {
     StackList: typeof import('./src/components/StackList.vue')['default']
     StackListItem: typeof import('./src/components/StackListItem.vue')['default']
     StackRootDropZone: typeof import('./src/components/StackRootDropZone.vue')['default']
+    Storage: typeof import('./src/components/settings/Storage.vue')['default']
     Terminal: typeof import('./src/components/Terminal.vue')['default']
     TwoFADialog: typeof import('./src/components/TwoFADialog.vue')['default']
     Uptime: typeof import('./src/components/Uptime.vue')['default']

@@ -43,6 +43,8 @@
             >
                 <font-awesome-icon :icon="entry.isDirectory ? 'folder' : 'file'" class="me-2 icon" />
                 <span class="name">{{ listing.path === "" ? entry.path : entry.name }}</span>
+                <span v-if="entry.dataset" class="badge bg-success ms-2" :title="$t('storageLabelDataset')">{{ entry.dataset }}</span>
+                <span v-if="entry.stack" class="badge bg-warning text-dark ms-2" :title="$t('storagePickerStackHint')">{{ $t("storagePickerStack", [ entry.stack ]) }}</span>
                 <font-awesome-icon v-if="entry.isDirectory" icon="chevron-right" class="ms-auto open" @click.stop="load(entry.path)" />
             </button>
             <div v-if="!loading && listing.path !== '' && listing.entries.length === 0" class="text-muted p-2">

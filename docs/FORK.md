@@ -9,7 +9,24 @@ Questo fork aggiunge a Dockge:
 - avvisi sulle immagini aggiornabili;
 - API REST + endpoint MCP per script e assistenti AI, con chiavi API.
 
-In progettazione: dataset ZFS per stack e volumi, vedi [ZFS-DESIGN.md](ZFS-DESIGN.md).
+Dataset ZFS per stack e volumi: in corso, vedi [ZFS-DESIGN.md](ZFS-DESIGN.md). Per ora Dockge riconosce i dataset e li mostra, senza crearli.
+
+## Archiviazione ZFS (sola lettura)
+
+- **Impostazioni → Archiviazione**: filesystem della cartella degli stack, dataset, se la cartella è la radice del dataset, propagazione del mount, host TrueNAS, spazio libero, eventuali problemi con il rimedio.
+- Se la cartella degli stack è su ZFS, la pagina dello stack mostra se lo stack è un dataset e, nell'editor, ogni volume ha un'etichetta: `dataset`, `cartella`, `mancante: Docker crea una cartella`, `dataset esterno`, `nello stack X`, `non visibile`. Un percorso assoluto dentro lo stack propone il relativo (`./nome`) con un clic.
+- Il selettore di percorsi mostra il dataset montato su ogni cartella e a quale stack appartiene.
+- API: `get_storage_status`, `get_stack_storage`; `get_info` riassume lo stato; `list_host_paths` aggiunge `dataset` e `stack`.
+- Per vedere i dataset creati sull'host dopo l'avvio di Dockge, la cartella degli stack va montata con `propagation: rslave`:
+
+```yaml
+volumes:
+  - type: bind
+    source: /mnt/pool/stacks
+    target: /mnt/pool/stacks
+    bind:
+      propagation: rslave
+```
 
 L'immagine è pubblicata da GitHub Actions su `ghcr.io/vidaniello/dockge` (tag `latest` da `master`, `1.2.3` dai tag `v1.2.3`).
 
