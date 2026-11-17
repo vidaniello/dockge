@@ -100,6 +100,8 @@ export interface VolumeStorage {
     recipe : VolumeRecipe | null;
     /** Differences between the dataset and x-dockge.zfs */
     differences : PropertyDifference[];
+    /** dockge:migration of the dataset: "copying" = a conversion was interrupted */
+    migration : string | null;
 }
 
 export interface StackStorage {
@@ -120,6 +122,12 @@ export interface StackStorage {
     recipeErrors : string[];
     /** The provider could not be read: properties and differences are missing */
     providerError : string | null;
+    /** dockge:migration of the stack dataset ("copying" = interrupted conversion of the stack folder) */
+    migration : string | null;
+    /** Copies kept by conversions to dataset */
+    backups : { name : string, kind : "volume" | "stack" }[];
+    /** ZFS job running on the stack (conversion, ...) */
+    job : unknown;
 }
 
 interface HostInfo {
@@ -419,8 +427,29 @@ async function getStackDatasets(stackDataset : string) : Promise<DatasetInfo[] |
     return list;
 }
 
+let mountpointCache : { time : number, map : Map<string, string> } | undefined;
+
+/**
+ * Mount points of all the datasets of the host, from the provider (cached 60 s). null without a provider.
+ */
+async function getHostMountpoints() : Promise<Map<string, string> | null> {
+    if (mountpointCache && Date.now() - mountpointCache.time < 60 * 1000) {
+        return mountpointCache.map;
+    }
+    const provider = getProvider(await getZfsSettings());
+    if (!provider) {
+        return null;
+    }
+    mountpointCache = {
+        time: Date.now(),
+        map: await provider.listMountpoints(),
+    };
+    return mountpointCache.map;
+}
+
 export function forgetStackDatasets(stackDataset : string) {
     datasetCache.delete(stackDataset);
+    mountpointCache = undefined;
 }
 
 /**
@@ -557,6 +586,7 @@ export function describeBindSource(source : string, stackDir : string, stacksDir
         managed: null,
         recipe: null,
         differences: [],
+        migration: null,
     };
 
     if (hasVariable(source) || source.startsWith("~")) {
@@ -685,10 +715,12 @@ export async function getStackStorage(server : DockgeServer, stackName : string,
 
     // Properties of the datasets of the stack, from the provider
     let providerError : string | null = null;
+    let migration : string | null = null;
     if (isDataset && own) {
         try {
             const datasets = await getStackDatasets(own.source);
             if (datasets) {
+                migration = datasets.find((dataset) => dataset.name === own.source)?.userProperties["dockge:migration"] ?? null;
                 const byName = new Map(datasets.map((dataset) => [ dataset.name, dataset ]));
                 for (const volume of volumes) {
                     const info = volume.kind === "dataset" && volume.dataset ? byName.get(volume.dataset) : undefined;
@@ -696,6 +728,7 @@ export async function getStackStorage(server : DockgeServer, stackName : string,
                         volume.properties = info.properties;
                         volume.managed = info.userProperties["dockge:managed"] === "true";
                         volume.differences = volume.recipe ? compareRecipe(volume.recipe, info) : [];
+                        volume.migration = info.userProperties["dockge:migration"] ?? null;
                     }
                 }
             }
@@ -704,10 +737,51 @@ export async function getStackStorage(server : DockgeServer, stackName : string,
         }
     }
 
+    // External paths not mounted into Dockge: TrueNAS knows whether they are datasets (or inside one)
+    if (volumes.some((volume) => volume.kind === "notVisible" && volume.hostPath)) {
+        try {
+            const mountpoints = await getHostMountpoints();
+            if (mountpoints) {
+                for (const volume of volumes) {
+                    if (volume.kind !== "notVisible" || !volume.hostPath) {
+                        continue;
+                    }
+                    const exact = mountpoints.get(volume.hostPath);
+                    if (exact) {
+                        volume.kind = "dataset";
+                        volume.zfs = true;
+                        volume.dataset = exact;
+                        continue;
+                    }
+                    let best : string | null = null;
+                    for (const mountpoint of mountpoints.keys()) {
+                        if (isInside(volume.hostPath, mountpoint) && (!best || mountpoint.length > best.length)) {
+                            best = mountpoint;
+                        }
+                    }
+                    if (best) {
+                        volume.zfs = true;
+                        volume.dataset = mountpoints.get(best) ?? null;
+                    }
+                }
+            }
+        } catch (e) {
+            providerError = providerError ?? (e instanceof Error ? e.message : String(e));
+        }
+    }
+
     let canCreateDatasets = false;
     if (isDataset) {
         canCreateDatasets = (await getStorageStatus(server)).canCreate;
     }
+
+    const { listMigrationBackups } = await import("./migrate");
+    const { runningJob, jobSummary } = await import("./jobs");
+    const job = runningJob(stackName);
+    const backups = zfs ? (await listMigrationBackups(server, stackName)).map((backup) => ({
+        name: backup.name,
+        kind: backup.kind,
+    })) : [];
 
     return {
         stack: stackName,
@@ -720,6 +794,9 @@ export async function getStackStorage(server : DockgeServer, stackName : string,
         canCreateDatasets,
         recipeErrors,
         providerError,
+        migration,
+        backups,
+        job: job ? jobSummary(job, 5) : null,
     };
 }
 

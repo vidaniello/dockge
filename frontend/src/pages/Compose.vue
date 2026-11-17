@@ -174,6 +174,16 @@
                         />
                     </div>
 
+                    <!-- Storage on ZFS: volumes, conversions, adoptions -->
+                    <StackStorage
+                        v-if="!isEditMode && !isAdd && stackStorage && storageStatus && storageStatus.zfs && storageStatus.canCreate"
+                        :endpoint="endpoint"
+                        :stack-name="stack.name"
+                        :storage="stackStorage"
+                        :status="storageStatus"
+                        @changed="onStorageChanged"
+                    />
+
                     <!-- Snapshots of a stack that is a ZFS dataset -->
                     <StackSnapshots
                         v-if="!isEditMode && !isAdd && stackStorage && stackStorage.isDataset && storageStatus && storageStatus.canCreate"
@@ -474,6 +484,7 @@ import ExpandableBox from "../components/ExpandableBox.vue";
 import PathPicker from "../components/PathPicker.vue";
 import MissingVolumesDialog from "../components/MissingVolumesDialog.vue";
 import StackSnapshots from "../components/StackSnapshots.vue";
+import StackStorage from "../components/StackStorage.vue";
 import dotenv from "dotenv";
 import { ref } from "vue";
 import { useToast } from "vue-toastification";
@@ -527,6 +538,7 @@ export default {
         PathPicker,
         MissingVolumesDialog,
         StackSnapshots,
+        StackStorage,
         FontAwesomeIcon,
         CodeMirror,
         BModal,
@@ -1071,6 +1083,15 @@ export default {
          * @param {string} source Host part of the volume
          * @returns {object|null} Entry of getStackStorage
          */
+        /**
+         * A conversion / adoption changed the datasets and maybe compose.yaml
+         * @returns {void}
+         */
+        onStorageChanged() {
+            this.loadStack();
+            this.scheduleStackStorage(0);
+        },
+
         setVolumeRecipe(name, recipe) {
             if (!this.jsonConfig["x-dockge"] || typeof this.jsonConfig["x-dockge"] !== "object") {
                 this.jsonConfig["x-dockge"] = {};

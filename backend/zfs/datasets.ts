@@ -446,3 +446,65 @@ export async function destroyStackDatasets(server : DockgeServer, stackName : st
     });
     return datasets;
 }
+
+export interface StackDatasetRename {
+    from : string;
+    to : string;
+    oldName : string;
+    newName : string;
+    target : string;
+}
+
+/**
+ * Check that a stack that is a dataset can be renamed (before anything is stopped)
+ */
+export async function planStackDatasetRename(server : DockgeServer, oldName : string, newName : string) : Promise<StackDatasetRename> {
+    const { status } = await getCreationContext(server);
+    const source = path.join(status.stacksDir, oldName);
+    const stackDataset = isDatasetMount(source);
+    const datasets = datasetsInside(source);
+    if (!stackDataset || datasets.some((dataset) => dataset !== stackDataset && !dataset.startsWith(stackDataset + "/"))) {
+        throw new ValidationError(`The stack folder contains datasets (${datasets.join(", ")}) but is not a dataset itself: it cannot be renamed. Convert it to a dataset first, or rename it in TrueNAS.`);
+    }
+    if (!status.stacksIsDatasetRoot || stackDataset !== `${status.dataset}/${oldName}`) {
+        throw new ValidationError(`The dataset ${stackDataset} is not named after the stack: rename it in TrueNAS`);
+    }
+    const to = `${status.dataset}/${newName}`;
+    checkSubtree(status, to);
+    return {
+        from: stackDataset,
+        to,
+        oldName,
+        newName,
+        target: path.join(status.stacksDir, newName),
+    };
+}
+
+export function explainAdminOnly(e : unknown, action : string) : Error {
+    const message = e instanceof Error ? e.message : String(e);
+    if (/not authori[sz]ed|EACCES|ENOTAUTHORIZED/i.test(message)) {
+        return new ValidationError(`TrueNAS refused to ${action}: ${message}. TrueNAS 25.04 allows renaming a dataset only to a full administrator: use the API key of an admin user, or rename it in TrueNAS.`);
+    }
+    return e instanceof Error ? e : new Error(message);
+}
+
+/**
+ * Rename the dataset of a stack (the containers must be removed) and wait until it is mounted at the new path
+ */
+export async function renameStackDataset(server : DockgeServer, plan : StackDatasetRename) : Promise<void> {
+    const { provider } = await getCreationContext(server);
+    log.info("zfs", `Renaming dataset ${plan.from} to ${plan.to}`);
+    try {
+        await provider.renameDataset(plan.from, plan.to);
+    } catch (e) {
+        throw explainAdminOnly(e, `rename ${plan.from}`);
+    }
+    await waitForMount(plan.target, plan.to);
+    try {
+        await provider.setUserProperties(plan.to, {
+            [STACK_PROPERTY]: plan.newName,
+        });
+    } catch (e) {
+        log.warn("zfs", `Cannot update ${STACK_PROPERTY} of ${plan.to}: ${e instanceof Error ? e.message : e}`);
+    }
+}

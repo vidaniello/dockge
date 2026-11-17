@@ -373,6 +373,7 @@ export class Stack {
     }
 
     async deploy(socket? : DockgeSocket, options : DeployOptions = {}) : Promise<number> {
+        await this.checkNoJob("deploy");
         await this.prepareVolumes(options);
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("up", "-d", "--remove-orphans"), this.path, this.outputListener);
@@ -427,12 +428,13 @@ export class Stack {
         if (newName === this.name) {
             throw new ValidationError("The new name is the same as the current one");
         }
+        await this.checkNoJob("rename");
 
-        const { datasetsInside } = await import("./zfs/datasets");
-        const datasets = datasetsInside(this.path);
-        if (datasets.length > 0) {
-            throw new ValidationError(`The stack folder is (or contains) a ZFS dataset (${datasets.join(", ")}): renaming it is not supported yet. Rename the datasets in TrueNAS instead.`);
-        }
+        // A stack that is a dataset is renamed by renaming its dataset (the children follow, mountpoints are inherited);
+        // a folder that contains datasets cannot be renamed (EBUSY on the mount points)
+        const zfs = await import("./zfs/datasets");
+        const datasets = zfs.datasetsInside(this.path);
+        const datasetRename = datasets.length > 0 ? await zfs.planStackDatasetRename(this.server, this.name, newName) : null;
 
         const newStack = new Stack(this.server, newName, undefined, undefined, true);
         newStack._composeYAML = "services: {}";
@@ -489,7 +491,11 @@ export class Stack {
             }
         }
 
-        await fsAsync.rename(this.path, newStack.path);
+        if (datasetRename) {
+            await zfs.renameStackDataset(this.server, datasetRename);
+        } else {
+            await fsAsync.rename(this.path, newStack.path);
+        }
 
         const renamed = await Stack.getStack(this.server, newName);
         if (changed) {
@@ -520,6 +526,7 @@ export class Stack {
      * @param options destroyDatasets: when the stack is a ZFS dataset, destroy it with its children and snapshots
      */
     async delete(socket? : DockgeSocket, options : { destroyDatasets? : boolean } = {}) : Promise<number> {
+        await this.checkNoJob("delete");
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("down", "--remove-orphans"), this.path, this.outputListener);
         if (exitCode !== 0) {
@@ -596,6 +603,10 @@ export class Stack {
                     // Check if it is a directory
                     let stat = await fsAsync.stat(path.join(stacksDir, filename));
                     if (!stat.isDirectory()) {
+                        continue;
+                    }
+                    // Copy kept by a conversion to dataset (zfs/migrate.ts): not a stack
+                    if (filename.includes(".dockge-backup-")) {
                         continue;
                     }
                     // If no compose file exists, skip it
@@ -737,9 +748,36 @@ export class Stack {
     }
 
     async start(socket? : DockgeSocket, options : DeployOptions = {}) {
+        await this.checkNoJob("start");
         await this.prepareVolumes(options);
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("up", "-d", "--remove-orphans"), this.path, this.outputListener);
+        if (exitCode !== 0) {
+            throw new Error("Failed to start, please check the terminal output for more information.");
+        }
+        return exitCode;
+    }
+
+    /** Set by a ZFS job (conversion) on its own instance: it may stop and start the stack it holds */
+    insideJob = false;
+
+    /**
+     * Refuse to act on the stack while a ZFS job (conversion, ...) works on it
+     */
+    async checkNoJob(action : string) {
+        if (this.insideJob) {
+            return;
+        }
+        const { assertNoJob } = await import("./zfs/jobs");
+        assertNoJob(this.name, action);
+    }
+
+    /**
+     * docker compose up -d without the volume checks (after a change made by Dockge itself, e.g. an adoption)
+     */
+    async composeUp(socket? : DockgeSocket) : Promise<number> {
+        const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
+        const exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("up", "-d", "--remove-orphans"), this.path, this.outputListener);
         if (exitCode !== 0) {
             throw new Error("Failed to start, please check the terminal output for more information.");
         }
@@ -764,6 +802,7 @@ export class Stack {
     }
 
     async stop(socket? : DockgeSocket) : Promise<number> {
+        await this.checkNoJob("stop");
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("stop"), this.path, this.outputListener);
         if (exitCode !== 0) {
@@ -773,6 +812,7 @@ export class Stack {
     }
 
     async restart(socket? : DockgeSocket) : Promise<number> {
+        await this.checkNoJob("restart");
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("restart"), this.path, this.outputListener);
         if (exitCode !== 0) {
@@ -782,6 +822,7 @@ export class Stack {
     }
 
     async down(socket? : DockgeSocket) : Promise<number> {
+        await this.checkNoJob("down");
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("down"), this.path, this.outputListener);
         if (exitCode !== 0) {
@@ -791,6 +832,7 @@ export class Stack {
     }
 
     async update(socket? : DockgeSocket, options : DeployOptions = {}) {
+        await this.checkNoJob("update");
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("pull"), this.path, this.outputListener);
         if (exitCode !== 0) {
