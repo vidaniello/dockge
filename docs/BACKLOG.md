@@ -144,3 +144,54 @@ L'immagine fissa `docker compose` alla v5.0.2 (`docker/Dockerfile`): dalla v5.1.
   - Se non lo è: niente, o un commento sulla issue esistente con la versione provata.
 - Lo stesso test si può eseguire nella CI quando cambia il `Dockerfile`, per evitare di aggiornare per sbaglio a una versione non compatibile.
 - Valutare anche la segnalazione a monte (docker/compose o moby): il demone accetta e restituisce quel formato, il client nuovo no.
+
+## 11. Home: riepilogo degli stack gestiti e delle altre risorse
+
+La home (`frontend/src/pages/DashboardHome.vue`) conta tutti gli stack, compresi quelli non gestiti da Dockge.
+
+- Contare solo gli stack gestiti (attivi / fermi / con errori / con aggiornamenti delle immagini), e mostrare a parte, più piccolo, quanti stack non gestiti ci sono.
+- Aggiungere riepiloghi per le altre risorse, letti dall'API Docker (`backend/docker-api.ts`) e non dalla CLI:
+  - servizi / container (in esecuzione, fermi, unhealthy);
+  - volumi (quanti, quelli non usati da nessun container);
+  - reti (quante, quelle non usate);
+  - immagini (quante, spazio occupato, quelle non usate);
+  - con ZFS: dataset degli stack, snapshot, spazio libero della cartella degli stack.
+- Ogni riquadro porta, dove ha senso, all'elenco filtrato.
+- Per gli agent: un riepilogo per ciascun endpoint.
+
+## 12. Impostazioni: controllo completo del tema chiaro e scuro
+
+In alcune pagine delle Impostazioni, nel tema scuro qualcosa non si legge bene, e nel tema chiaro alcuni campi sono rimasti con i colori del tema scuro.
+
+- Passare tutte le voci del menu (Generale, Aspetto, Sicurezza, Global .env, Chiavi API, Archiviazione, Informazioni) nei due temi, con screenshot prima e dopo.
+- Cercare i colori fissi nel codice (es. `#6c757d`, sfondi scuri scritti direttamente nei componenti) e sostituirli con le variabili di `frontend/src/styles/vars.scss` e con regole `.dark &`.
+- Collegato al punto 2 (campi di input scuri nel tema chiaro) e al punto 8 (avvisi a pillola).
+
+## 13. Leggibilità: selezione del testo nel tema chiaro e segnaposto nel tema scuro
+
+- **Tema chiaro**: la selezione del testo nei campi editabili (input, textarea, editor CodeMirror) si vede poco. Controllare `.cm-selectionBackground` in `frontend/src/styles/main.scss` e aggiungere un colore di `::selection` per input e textarea con contrasto sufficiente.
+- **Tema scuro**: alcuni segnaposto (placeholder) sono poco leggibili, ad esempio quello del campo "Docker Run" (`docker run ...`, `textarea.docker-run` in `frontend/src/pages/DashboardHome.vue`) sopra il pulsante "Converti a compose". Definire un colore dei placeholder per il tema scuro valido per tutti i campi.
+
+## 14. Eliminazione di uno stack dataset: dataset elencati due volte
+
+Nella finestra di eliminazione (e nel messaggio d'errore) ogni dataset compare due volte:
+
+```
+pool1/dockge_custom/stacks/zftest2-clone2
+pool1/dockge_custom/stacks/zftest2-clone2/db
+pool1/dockge_custom/stacks/zftest2-clone2/html
+pool1/dockge_custom/stacks/zftest2-clone2
+...
+```
+
+- **Causa probabile**: `datasetsInside()` in `backend/zfs/datasets.ts` restituisce una voce per ogni mount trovato in `/proc/self/mountinfo`, e nel container di Dockge lo stesso dataset è montato due volte nello stesso punto: una attraverso il bind della cartella degli stack (`rslave`), una attraverso il bind di `/mnt` per il selettore di percorsi. Da verificare sul NAS con `docker exec dockge grep zftest2 /proc/self/mountinfo`.
+- **Correzione**: togliere i doppioni in `datasetsInside()` (e controllare gli altri punti che contano i mount: `mountsInside`, ricerca dei dati nascosti, `planStackDatasetRename`).
+
+## 15. Eliminazione di uno stack dataset: l'opzione "conserva i dati" non è chiara e finisce in errore
+
+"Rimuovi solo i container e conserva i dati (lo stack resta nell'elenco)" esegue `docker compose down` e poi si ferma, perché la cartella è un dataset. Il risultato è quello promesso: container rimossi, dati e stack intatti. Ma viene riportato come un errore ("The containers were removed. The stack folder is (or contains) a ZFS dataset…"), e non è chiaro a cosa serva.
+
+- **Decidere** se tenerla:
+  - **toglierla**: "Elimina" su uno stack dataset elimina sempre tutto, dopo la conferma; per fermare e rimuovere i container c'è già "Down" nel menu dello stack;
+  - **oppure** rinominarla in qualcosa come "Rimuovi i container (come Down) e lascia lo stack e i dati", e farla finire con un messaggio di successo, non di errore.
+- In ogni caso il messaggio d'errore lato API (`delete_stack` con `datasets: "keep"`) va riscritto: oggi sembra un fallimento.
