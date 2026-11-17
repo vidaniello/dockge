@@ -79,8 +79,9 @@ export async function adoptDataset(server : DockgeServer, stackName : string, so
     if (otherStacks.length > 0) {
         warnings.push(`Also used by the stacks ${otherStacks.join(", ")}: their paths would point to a folder that no longer exists`);
     }
+    // Only a dataset this stack already uses can be adopted: never the data of another compose project or app
     if (binds.rewrites.length === 0) {
-        warnings.push(`No bind mount of ${stackName} uses ${oldMount}: add ./${clean} to the compose file yourself`);
+        throw new ValidationError(`No bind mount of ${stackName} uses ${oldMount}: only a dataset the stack already mounts can be moved into it`);
     }
 
     await stack.updateStatus();

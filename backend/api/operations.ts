@@ -88,19 +88,6 @@ async function getManagedStack(server : DockgeServer, name : unknown) : Promise<
     return stack;
 }
 
-/**
- * Stack of the file operations: optional (absolute paths do not need one)
- */
-function optionalStack(value : unknown) : string | null {
-    if (value === undefined || value === null || value === "") {
-        return null;
-    }
-    if (typeof(value) !== "string") {
-        throw new ValidationError("Invalid stack name");
-    }
-    return value;
-}
-
 function checkService(service : unknown) : string {
     if (!isValidServiceName(service)) {
         throw new ValidationError("Invalid service name");
@@ -289,7 +276,7 @@ export const operations : Operation[] = [
         id: "list_stacks",
         method: "get",
         path: "/stacks",
-        summary: "List all compose stacks (managed by Dockge or not) with status, folder and pending image updates",
+        summary: "List the stacks managed by Dockge with status, folder and pending image updates (other compose projects of the host are not visible through the API)",
         tag: "Stacks",
         permission: "read",
         readOnly: true,
@@ -298,7 +285,10 @@ export const operations : Operation[] = [
             const list = await Stack.getStackList(server, true);
             const result = [];
             for (const stack of list.values()) {
-                result.push(await stackSummary(stack));
+                // The API works only on the stacks managed by Dockge
+                if (stack.isManagedByDockge) {
+                    result.push(await stackSummary(stack));
+                }
             }
             return result.sort((a, b) => a.name.localeCompare(b.name));
         },
@@ -854,7 +844,7 @@ export const operations : Operation[] = [
         id: "list_files",
         method: "get",
         path: "/files",
-        summary: "List a folder: of a stack (relative path, e.g. . or ./config) or an absolute path inside the stacks folder or DOCKGE_BROWSE_ROOTS (volumes with absolute paths)",
+        summary: "List a folder of a stack managed by Dockge (relative path, e.g. . or ./config) or of one of the volumes declared in its compose file (absolute path)",
         description: "Entries: name, path, type (file / directory / symlink), size, modified, mode, uid, gid, dataset (ZFS dataset mounted on a folder). writable tells whether Dockge can write there.",
         tag: "Files",
         permission: "read",
@@ -862,7 +852,7 @@ export const operations : Operation[] = [
         params: {
             stack: {
                 ...stackName,
-                description: "Stack the relative paths refer to (optional with an absolute path)",
+                description: "Stack managed by Dockge: relative paths are inside its folder; absolute paths only for the volumes declared in its compose file",
             },
             path: {
                 type: "string",
@@ -870,7 +860,7 @@ export const operations : Operation[] = [
                 default: ".",
             },
         },
-        handler: async (args, server) => new FileService(server, optionalStack(args.stack)).list(args.path ?? "."),
+        handler: async (args, server) => (await FileService.forStack(server, args.stack)).list(args.path ?? "."),
     },
     {
         id: "read_file",
@@ -884,7 +874,7 @@ export const operations : Operation[] = [
         params: {
             stack: {
                 ...stackName,
-                description: "Stack the relative paths refer to (optional with an absolute path)",
+                description: "Stack managed by Dockge: relative paths are inside its folder; absolute paths only for the volumes declared in its compose file",
             },
             path: {
                 type: "string",
@@ -896,8 +886,8 @@ export const operations : Operation[] = [
                 default: "utf8",
             },
         },
-        required: [ "path" ],
-        handler: async (args, server) => new FileService(server, optionalStack(args.stack)).read(args.path, args.encoding === "base64" ? "base64" : "utf8"),
+        required: [ "stack", "path" ],
+        handler: async (args, server) => (await FileService.forStack(server, args.stack)).read(args.path, args.encoding === "base64" ? "base64" : "utf8"),
     },
     {
         id: "write_file",
@@ -910,7 +900,7 @@ export const operations : Operation[] = [
         params: {
             stack: {
                 ...stackName,
-                description: "Stack the relative paths refer to (optional with an absolute path)",
+                description: "Stack managed by Dockge: relative paths are inside its folder; absolute paths only for the volumes declared in its compose file",
             },
             path: {
                 type: "string",
@@ -946,8 +936,8 @@ export const operations : Operation[] = [
                 description: "Create the missing folders",
             },
         },
-        required: [ "path", "content" ],
-        handler: async (args, server) => new FileService(server, optionalStack(args.stack)).write(args.path, {
+        required: [ "stack", "path", "content" ],
+        handler: async (args, server) => (await FileService.forStack(server, args.stack)).write(args.path, {
             content: args.content,
             encoding: args.encoding,
             lineEnding: args.lineEnding,
@@ -966,14 +956,14 @@ export const operations : Operation[] = [
         params: {
             stack: {
                 ...stackName,
-                description: "Stack the relative paths refer to (optional with an absolute path)",
+                description: "Stack managed by Dockge: relative paths are inside its folder; absolute paths only for the volumes declared in its compose file",
             },
             path: {
                 type: "string",
             },
         },
-        required: [ "path" ],
-        handler: async (args, server) => new FileService(server, optionalStack(args.stack)).makeDir(args.path),
+        required: [ "stack", "path" ],
+        handler: async (args, server) => (await FileService.forStack(server, args.stack)).makeDir(args.path),
     },
     {
         id: "move_file",
@@ -985,7 +975,7 @@ export const operations : Operation[] = [
         params: {
             stack: {
                 ...stackName,
-                description: "Stack the relative paths refer to (optional with absolute paths)",
+                description: "Stack managed by Dockge: relative paths are inside its folder; absolute paths only for the volumes declared in its compose file",
             },
             from: {
                 type: "string",
@@ -999,8 +989,8 @@ export const operations : Operation[] = [
                 description: "Replace an existing file (never a folder)",
             },
         },
-        required: [ "from", "to" ],
-        handler: async (args, server) => new FileService(server, optionalStack(args.stack)).move(args.from, args.to, args.overwrite === true || args.overwrite === "true"),
+        required: [ "stack", "from", "to" ],
+        handler: async (args, server) => (await FileService.forStack(server, args.stack)).move(args.from, args.to, args.overwrite === true || args.overwrite === "true"),
     },
     {
         id: "delete_file",
@@ -1014,7 +1004,7 @@ export const operations : Operation[] = [
         params: {
             stack: {
                 ...stackName,
-                description: "Stack the relative paths refer to (optional with an absolute path)",
+                description: "Stack managed by Dockge: relative paths are inside its folder; absolute paths only for the volumes declared in its compose file",
             },
             path: {
                 type: "string",
@@ -1028,12 +1018,12 @@ export const operations : Operation[] = [
                 description: "The same path again",
             },
         },
-        required: [ "path", "confirm" ],
+        required: [ "stack", "path", "confirm" ],
         handler: async (args, server) => {
             if (args.confirm !== args.path) {
                 throw new ValidationError("Set confirm to the same path");
             }
-            return new FileService(server, optionalStack(args.stack)).remove(args.path, args.recursive === true || args.recursive === "true");
+            return (await FileService.forStack(server, args.stack)).remove(args.path, args.recursive === true || args.recursive === "true");
         },
     },
     {
@@ -1108,7 +1098,7 @@ export const operations : Operation[] = [
             const list = await Stack.getStackList(server, true);
             const result = [];
             for (const stack of list.values()) {
-                const info = imageUpdateChecker.get(stack.name);
+                const info = stack.isManagedByDockge ? imageUpdateChecker.get(stack.name) : undefined;
                 if (info) {
                     result.push({
                         stack: stack.name,
@@ -1134,9 +1124,10 @@ export const operations : Operation[] = [
                 description: "Only this stack (optional)",
             },
         },
-        handler: async (args) => {
+        handler: async (args, server) => {
             if (typeof(args.name) === "string" && args.name) {
-                return imageUpdateChecker.checkStack(args.name);
+                const stack = await getManagedStack(server, args.name);
+                return imageUpdateChecker.checkStack(stack.name);
             }
             await imageUpdateChecker.checkAll();
             return {
@@ -1148,7 +1139,7 @@ export const operations : Operation[] = [
         id: "list_host_paths",
         method: "get",
         path: "/host/paths",
-        summary: "Browse the host folders mounted into Dockge (DOCKGE_BROWSE_ROOTS), to choose absolute paths for bind mounts of shared or external data",
+        summary: "Browse the host folders mounted into Dockge (DOCKGE_BROWSE_ROOTS), to choose absolute paths for bind mounts of shared or external data. Folders only: files are not listed, their content cannot be read through the API",
         description: "Every entry tells the ZFS dataset mounted on it (dataset) and the stack whose folder contains it (stack). The data of a single stack belongs in its own folder (./name), not here.",
         tag: "Host",
         permission: "read",
@@ -1159,12 +1150,8 @@ export const operations : Operation[] = [
                 description: "Absolute folder path, empty to list the roots",
                 default: "",
             },
-            showFiles: {
-                type: "boolean",
-                default: false,
-            },
         },
-        handler: async (args, server) => listDirectory(typeof(args.path) === "string" ? args.path : "", args.showFiles === true || args.showFiles === "true", server.stacksDir),
+        handler: async (args, server) => listDirectory(typeof(args.path) === "string" ? args.path : "", false, server.stacksDir),
     },
     {
         id: "list_host_ips",

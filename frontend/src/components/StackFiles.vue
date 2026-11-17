@@ -14,7 +14,7 @@
                     <font-awesome-icon icon="folder" class="me-1" />{{ stackName }}
                 </button>
                 <button
-                    v-for="root in volumeRoots"
+                    v-for="root in roots"
                     :key="root"
                     class="btn btn-sm"
                     :class="current.startsWith(root) ? 'btn-primary' : 'btn-normal'"
@@ -173,6 +173,8 @@ export default {
     data() {
         return {
             current: ".",
+            // Volumes usable besides the stack folder, as decided by the server (null until the first answer)
+            serverRoots: null,
             entries: [],
             writable: false,
             loading: false,
@@ -201,6 +203,9 @@ export default {
         };
     },
     computed: {
+        roots() {
+            return this.serverRoots ?? this.volumeRoots;
+        },
         isStackPath() {
             return this.current === "." || this.current.startsWith("./");
         },
@@ -214,7 +219,7 @@ export default {
                 parts.pop();
                 return parts.length <= 1 ? "." : parts.join("/");
             }
-            if (this.volumeRoots.includes(this.current)) {
+            if (this.roots.includes(this.current)) {
                 return null;
             }
             return this.current.replace(/\/[^/]+$/, "") || "/";
@@ -230,7 +235,7 @@ export default {
                     path: "./" + parts.slice(0, index + 1).join("/"),
                 })) ];
             }
-            const root = this.volumeRoots.find((item) => this.current.startsWith(item)) ?? this.current;
+            const root = this.roots.find((item) => this.current.startsWith(item)) ?? this.current;
             const rest = this.current.slice(root.length).split("/").filter((part) => part);
             return [{
                 name: root,
@@ -304,6 +309,9 @@ export default {
                 this.entries = res.result.entries;
                 this.writable = res.result.writable;
                 this.current = res.result.path;
+                if (Array.isArray(res.result.volumeRoots)) {
+                    this.serverRoots = res.result.volumeRoots;
+                }
             } else {
                 this.error = res.msg;
                 this.entries = [];

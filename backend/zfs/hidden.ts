@@ -1,3 +1,4 @@
+import fs from "fs";
 import os from "os";
 import path from "path";
 import childProcessAsync from "promisify-child-process";
@@ -77,8 +78,16 @@ function timestamp(date = new Date()) : string {
  * The ZFS mount points of the stacks folder (it included), visible in Dockge
  */
 function datasetMounts(stacksDir : string) {
+    // Only the stacks folder itself and the folders of stacks managed by Dockge (with a compose file)
+    const managed = (mountpoint : string) => {
+        if (mountpoint === stacksDir) {
+            return true;
+        }
+        const name = path.relative(stacksDir, mountpoint).split(path.sep)[0];
+        return /^[a-z0-9_-]+$/.test(name) && [ "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml" ].some((file) => fs.existsSync(path.join(stacksDir, name, file)));
+    };
     return readMountInfo()
-        .filter((entry) => entry.fsType === "zfs" && entry.root === "/" && isInside(entry.mountPoint, stacksDir))
+        .filter((entry) => entry.fsType === "zfs" && entry.root === "/" && isInside(entry.mountPoint, stacksDir) && managed(entry.mountPoint))
         .map((entry) => ({
             mountpoint: entry.mountPoint,
             dataset: entry.source,
