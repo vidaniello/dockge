@@ -60,6 +60,8 @@ volumes:
 
 L'immagine è pubblicata da GitHub Actions su `ghcr.io/vidaniello/dockge` (tag `latest` da `master`, `1.2.3` dai tag `v1.2.3`).
 
+L'immagine fissa `docker compose` alla **v5.0.2** (binario ufficiale, verificato con SHA-256, in `docker/Dockerfile`). Dalla v5.1.0 compose si ferma con `ParseAddr("…::1/64"): unexpected character, want colon` sulle reti a cui il demone Docker di TrueNAS assegna un gateway IPv6 scritto con il prefisso, cioè su qualsiasi stack. Prima di aggiornarla, provare la nuova versione su TrueNAS.
+
 ## Cartelle della barra laterale
 
 - Il pulsante con la cartella accanto alla ricerca crea una cartella; passando sopra una cartella compaiono "nuova sottocartella", "rinomina" ed "elimina" (solo se vuota).

@@ -133,3 +133,14 @@ Con le API dietro un reverse proxy HTTPS (es. Nginx Proxy Manager, con un nome d
   - validare l'indirizzo (solo `https://`, salvo `DOCKGE_API_ALLOW_HTTP=true`; niente percorso finale `/api/v1` o `/mcp`);
   - aggiornare la tabella delle variabili e la sezione sul reverse proxy in `docs/FORK.md`.
 - Valutare lo stesso per l'interfaccia web senza porta dedicata (API su `/api` e `/mcp` della porta principale): lì `location.origin` va già bene se si apre Dockge dal nome pubblico.
+
+## 10. docker compose: controllo automatico delle nuove versioni
+
+L'immagine fissa `docker compose` alla v5.0.2 (`docker/Dockerfile`): dalla v5.1.0 (provate fino alla v5.6.1) compose si ferma con `ParseAddr("…::1/64"): unexpected character, want colon` perché il demone Docker di TrueNAS restituisce il gateway IPv6 delle reti con il prefisso. Senza controllo resteremmo bloccati sulla v5.0.2 anche quando il problema verrà corretto.
+
+- **Test riproducibile**: uno script (es. `extra/test-compose-ipv6-gateway.ts`) avvia un finto Docker Engine API su socket Unix che risponde a `/_ping`, `/version`, `/networks`, `/containers/json`… con una rete del progetto che ha `IPAM.Config[].Gateway = "fdfe:b4b:2e4b:c::1/64"`, poi esegue `docker compose up -d --pull never` su un compose minimo con `DOCKER_HOST` puntato al socket. Esito: errore `ParseAddr` = versione non compatibile; qualsiasi altro errore successivo (es. creazione del container non implementata) = la rete è stata letta, compatibile.
+- **Workflow GitHub Actions** pianificato (es. una volta a settimana): legge l'ultima release di `docker/compose`, scarica il binario e `checksums.txt`, esegue il test.
+  - Se la nuova versione è compatibile: apre una issue (o una PR che aggiorna versione e SHA-256 delle tre architetture nel `Dockerfile`).
+  - Se non lo è: niente, o un commento sulla issue esistente con la versione provata.
+- Lo stesso test si può eseguire nella CI quando cambia il `Dockerfile`, per evitare di aggiornare per sbaglio a una versione non compatibile.
+- Valutare anche la segnalazione a monte (docker/compose o moby): il demone accetta e restituisce quel formato, il client nuovo no.
