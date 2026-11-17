@@ -37,6 +37,15 @@ x-dockge:
    Sui dataset esistenti Dockge non cambia niente da solo: se le proprietà differiscono, l'editor mostra `≠ x-dockge.zfs`; un clic sul badge le applica al dataset (dopo conferma).
 - **Aggiungi percorso** nei volumi apre il selettore con due schede: **In questo stack** (cartelle e dataset dello stack, oppure un nuovo volume `./nome` con tipo Generico / Database / File grandi e proprietario, scritti in `x-dockge.zfs`; il dataset nasce al deploy) e **Cartella dell'host**. Se all'utente TrueNAS dai anche il ruolo `FILESYSTEM_ATTRS_READ`, la scheda dell'host legge tutto l'host dall'API, senza montare `/mnt` in Dockge.
 - Prima di deploy / avvio / aggiornamento, se un volume punta dentro la cartella di **un altro stack** Dockge lo segnala (una volta per percorso): i due stack restano legati.
+### Snapshot (stack che sono dataset)
+
+- Il riquadro **Snapshot** nella pagina dello stack fa snapshot ricorsivi (compose, `.env` e tutti i volumi nello stesso istante), con etichetta e opzione "ferma i container durante lo snapshot", e li elenca insieme a quelli dei task periodici di TrueNAS.
+- Prima di **Aggiorna** Dockge fa uno snapshot automatico (`dockge-auto-…`) e conserva gli ultimi N (Impostazioni → Archiviazione).
+- **Rollback**: ferma lo stack, riporta indietro tutti i dataset, lo riavvia. Gli snapshot più recenti vengono distrutti (vengono elencati prima); si conferma scrivendo il nome.
+- **Clona come nuovo stack**: crea un nuovo stack dai cloni ZFS dello snapshot, senza avviarlo (cambia `container_name` e porte prima di avviarlo).
+- Ruoli TrueNAS: `SNAPSHOT_WRITE` e `SNAPSHOT_DELETE`. In TrueNAS 25.04 rollback e clone sono permessi solo a un amministratore completo.
+- API: `list_snapshots`, `create_snapshot`, `clone_stack`, `rollback_snapshot`, `delete_snapshot` (le ultime due solo con l'impostazione "operazioni distruttive via API" e `confirm` uguale al nome), `update_stack` accetta `snapshot`.
+
 - Rinomina ed eliminazione di uno stack che è (o contiene) un dataset non sono ancora gestite: la rinomina viene rifiutata, l'eliminazione rimuove i container e conserva i dati. Il dataset si rinomina o distrugge da TrueNAS.
 - Per vedere i dataset creati sull'host dopo l'avvio di Dockge, la cartella degli stack va montata con `propagation: rslave`:
 

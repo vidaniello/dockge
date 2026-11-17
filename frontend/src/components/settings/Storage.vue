@@ -128,6 +128,22 @@
                     </select>
                     <div class="form-text">{{ $t("zfsMissingVolumesHint") }}</div>
                 </div>
+
+                <!-- Snapshots -->
+                <h5 class="mt-4 mb-3">{{ $t("snapshots") }}</h5>
+                <div class="form-check mb-2">
+                    <input id="auto-snapshot" v-model="form.autoSnapshotBeforeUpdate" class="form-check-input" type="checkbox" :disabled="saving" @change="save({ autoSnapshotBeforeUpdate: form.autoSnapshotBeforeUpdate })">
+                    <label class="form-check-label" for="auto-snapshot">{{ $t("zfsAutoSnapshot") }}</label>
+                </div>
+                <div class="mb-3 d-flex align-items-center gap-2">
+                    <label class="form-label mb-0" for="auto-snapshot-keep">{{ $t("zfsAutoSnapshotKeep") }}</label>
+                    <input id="auto-snapshot-keep" v-model.number="form.autoSnapshotKeep" type="number" min="1" max="100" class="form-control keep-input" :disabled="saving || !form.autoSnapshotBeforeUpdate" @change="save({ autoSnapshotKeep: form.autoSnapshotKeep })">
+                </div>
+                <div class="form-check mb-2">
+                    <input id="destructive-api" v-model="form.destructiveApi" class="form-check-input" type="checkbox" :disabled="saving" @change="save({ destructiveApi: form.destructiveApi })">
+                    <label class="form-check-label" for="destructive-api">{{ $t("zfsDestructiveApi") }}</label>
+                </div>
+                <div class="form-text">{{ $t("zfsSnapshotRolesHint") }}</div>
             </template>
         </template>
 
@@ -156,6 +172,9 @@ export default {
                 truenasApiKey: "",
                 newStacksAsDatasets: true,
                 missingVolumes: "ask",
+                autoSnapshotBeforeUpdate: true,
+                autoSnapshotKeep: 5,
+                destructiveApi: false,
             },
         };
     },
@@ -217,6 +236,9 @@ export default {
                 truenasApiKey: "",
                 newStacksAsDatasets: settings.newStacksAsDatasets,
                 missingVolumes: settings.missingVolumes,
+                autoSnapshotBeforeUpdate: settings.autoSnapshotBeforeUpdate,
+                autoSnapshotKeep: settings.autoSnapshotKeep,
+                destructiveApi: settings.destructiveApi,
             };
         },
 
@@ -271,6 +293,10 @@ export default {
 // The global $border-radius turns multi-line alerts into ovals (see docs/BACKLOG.md, 8)
 .alert {
     border-radius: 10px;
+}
+
+.keep-input {
+    width: 100px;
 }
 
 .fingerprint {

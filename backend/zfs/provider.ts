@@ -41,6 +41,27 @@ export interface ZfsProvider {
     updateDataset(name : string, properties : DatasetProperties) : Promise<void>;
     /** Content of a folder of the host, and the datasets mounted in it (for the path picker) */
     listHostDirectory(dirPath : string, showFiles : boolean) : Promise<{ entries : HostEntry[], datasets : Map<string, string> }>;
+    /** Snapshots of these datasets */
+    listSnapshots(datasets : string[]) : Promise<SnapshotInfo[]>;
+    /** Recursive: the same snapshot of every child dataset, at the same instant */
+    createSnapshot(dataset : string, name : string, recursive : boolean) : Promise<void>;
+    deleteSnapshot(id : string, recursive : boolean) : Promise<void>;
+    /** Roll back the dataset and its children that have this snapshot; newer snapshots are destroyed */
+    rollbackSnapshot(id : string) : Promise<void>;
+    /** New dataset from a snapshot (depends on it until promoted) */
+    cloneSnapshot(id : string, target : string, userProperties : Record<string, string>) : Promise<void>;
+}
+
+export interface SnapshotInfo {
+    /** dataset@name */
+    id : string;
+    dataset : string;
+    name : string;
+    /** Milliseconds since epoch, null if unknown */
+    created : number | null;
+    /** Bytes held only by this snapshot */
+    used : number | null;
+    referenced : number | null;
 }
 
 export interface HostEntry {
@@ -197,6 +218,72 @@ export class TrueNasProvider implements ZfsProvider {
                 datasets,
             };
         });
+    }
+
+    async listSnapshots(datasets : string[]) : Promise<SnapshotInfo[]> {
+        if (datasets.length === 0) {
+            return [];
+        }
+        return TrueNasClient.with(this.connection, async (client) => {
+            const list = await client.call<Record<string, unknown>[]>("zfs.snapshot.query", [
+                [[ "dataset", "in", datasets ]],
+                {
+                    extra: {
+                        properties: [ "creation", "used", "referenced" ],
+                        holds: false,
+                    },
+                },
+            ]);
+            const number = (value : unknown) => {
+                const raw = value && typeof value === "object" ? (value as { rawvalue? : unknown }).rawvalue : value;
+                const parsed = Number(raw);
+                return Number.isFinite(parsed) ? parsed : null;
+            };
+            return (Array.isArray(list) ? list : []).map((snapshot) => {
+                const id = String(snapshot.id ?? snapshot.name ?? "");
+                const properties = (snapshot.properties ?? {}) as Record<string, unknown>;
+                const creation = number(properties.creation);
+                return {
+                    id,
+                    dataset: String(snapshot.dataset ?? id.split("@")[0]),
+                    name: String(snapshot.snapshot_name ?? id.split("@")[1] ?? ""),
+                    created: creation === null ? null : creation * 1000,
+                    used: number(properties.used),
+                    referenced: number(properties.referenced),
+                };
+            });
+        });
+    }
+
+    async createSnapshot(dataset : string, name : string, recursive : boolean) : Promise<void> {
+        await TrueNasClient.with(this.connection, (client) => client.call("zfs.snapshot.create", [{
+            dataset,
+            name,
+            recursive,
+        }]));
+    }
+
+    async deleteSnapshot(id : string, recursive : boolean) : Promise<void> {
+        await TrueNasClient.with(this.connection, (client) => client.call("zfs.snapshot.delete", [ id, {
+            recursive,
+        }]));
+    }
+
+    async rollbackSnapshot(id : string) : Promise<void> {
+        await TrueNasClient.with(this.connection, (client) => client.call("zfs.snapshot.rollback", [ id, {
+            // zfs rollback -r: destroy the newer snapshots (needed when it is not the latest)
+            recursive: true,
+            // the same snapshot of every child dataset
+            recursive_rollback: true,
+        }]));
+    }
+
+    async cloneSnapshot(id : string, target : string, userProperties : Record<string, string>) : Promise<void> {
+        await TrueNasClient.with(this.connection, (client) => client.call("zfs.snapshot.clone", [{
+            snapshot: id,
+            dataset_dst: target,
+            dataset_properties: userProperties,
+        }]));
     }
 
     async updateDataset(name : string, properties : DatasetProperties) : Promise<void> {

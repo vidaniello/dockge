@@ -399,6 +399,98 @@ export class DockerSocketHandler extends AgentSocketHandler {
             }
         });
 
+        // Snapshots of a stack that is a dataset (phase 3)
+        agentSocket.on("listSnapshots", async (stackName : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                const { listStackSnapshots } = await import("../zfs/snapshots");
+                callbackResult({
+                    ok: true,
+                    ...(await listStackSnapshots(server, String(stackName ?? ""))),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("createSnapshot", async (stackName : unknown, options : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                const { createStackSnapshot } = await import("../zfs/snapshots");
+                const opts = (options && typeof(options) === "object" ? options : {}) as LooseObject;
+                const result = await createStackSnapshot(server, String(stackName ?? ""), {
+                    label: typeof(opts.label) === "string" ? opts.label : undefined,
+                    stopFirst: opts.stopFirst === true,
+                });
+                server.sendStackList();
+                callbackResult({
+                    ok: true,
+                    msg: "snapshotCreated",
+                    msgi18n: true,
+                    ...result,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // confirm: the snapshot name typed by the user
+        agentSocket.on("rollbackSnapshot", async (stackName : unknown, snapshot : unknown, confirm : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (typeof(snapshot) !== "string" || confirm !== snapshot) {
+                    throw new ValidationError("Type the snapshot name to confirm");
+                }
+                const { rollbackStack } = await import("../zfs/snapshots");
+                const result = await rollbackStack(server, String(stackName ?? ""), snapshot);
+                server.sendStackList();
+                callbackResult({
+                    ok: true,
+                    msg: "snapshotRolledBack",
+                    msgi18n: true,
+                    ...result,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("cloneStack", async (stackName : unknown, snapshot : unknown, newName : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                const { cloneStack } = await import("../zfs/snapshots");
+                const result = await cloneStack(server, String(stackName ?? ""), String(snapshot ?? ""), String(newName ?? ""));
+                server.sendStackList();
+                callbackResult({
+                    ok: true,
+                    msg: "snapshotCloned",
+                    msgi18n: true,
+                    ...result,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("deleteSnapshot", async (stackName : unknown, snapshot : unknown, confirm : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (typeof(snapshot) !== "string" || confirm !== snapshot) {
+                    throw new ValidationError("Type the snapshot name to confirm");
+                }
+                const { deleteStackSnapshot } = await import("../zfs/snapshots");
+                const result = await deleteStackSnapshot(server, String(stackName ?? ""), snapshot);
+                callbackResult({
+                    ok: true,
+                    msg: "snapshotDeleted",
+                    msgi18n: true,
+                    ...result,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
         // Datasets / folders of the bind mounts of a stack. composeYAML (optional): analyze the draft of the editor
         agentSocket.on("getStackStorage", async (stackName : unknown, composeYAML : unknown, callback) => {
             try {

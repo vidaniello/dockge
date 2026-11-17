@@ -19,6 +19,12 @@ export interface ZfsSettings {
     newStacksAsDatasets : boolean;
     /** What to do with the missing ./xxx bind mounts before a deploy */
     missingVolumes : MissingVolumesRule;
+    /** Recursive snapshot of the stack before "Update" recreates the containers */
+    autoSnapshotBeforeUpdate : boolean;
+    /** How many dockge-auto-* snapshots to keep per stack */
+    autoSnapshotKeep : number;
+    /** Rollback and deletion of snapshots through the external API (REST / MCP) */
+    destructiveApi : boolean;
 }
 
 export type PublicZfsSettings = Omit<ZfsSettings, "truenasApiKey"> & { truenasApiKeySet : boolean };
@@ -32,6 +38,9 @@ const DEFAULTS : ZfsSettings = {
     truenasFingerprint: "",
     newStacksAsDatasets: true,
     missingVolumes: "ask",
+    autoSnapshotBeforeUpdate: true,
+    autoSnapshotKeep: 5,
+    destructiveApi: false,
 };
 
 export async function getZfsSettings() : Promise<ZfsSettings> {
@@ -104,6 +113,20 @@ export async function updateZfsSettings(changes : Record<string, unknown>) : Pro
             throw new ValidationError("missingVolumes must be ask, dataset or directory");
         }
         next.missingVolumes = changes.missingVolumes as MissingVolumesRule;
+    }
+
+    if (typeof changes.autoSnapshotBeforeUpdate === "boolean") {
+        next.autoSnapshotBeforeUpdate = changes.autoSnapshotBeforeUpdate;
+    }
+    if (changes.autoSnapshotKeep !== undefined) {
+        const keep = Number(changes.autoSnapshotKeep);
+        if (!Number.isInteger(keep) || keep < 1 || keep > 100) {
+            throw new ValidationError("autoSnapshotKeep must be between 1 and 100");
+        }
+        next.autoSnapshotKeep = keep;
+    }
+    if (typeof changes.destructiveApi === "boolean") {
+        next.destructiveApi = changes.destructiveApi;
     }
 
     await Settings.set(KEY, next as unknown as object);
