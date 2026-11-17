@@ -174,6 +174,14 @@
                         />
                     </div>
 
+                    <!-- Snapshots of a stack that is a ZFS dataset -->
+                    <StackSnapshots
+                        v-if="!isEditMode && !isAdd && stackStorage && stackStorage.isDataset && storageStatus && storageStatus.canCreate"
+                        :endpoint="endpoint"
+                        :stack-name="stack.name"
+                        @rolled-back="loadStack"
+                    />
+
                     <button v-if="false && isEditMode && jsonConfig.services && Object.keys(jsonConfig.services).length > 0" class="btn btn-normal mb-3" @click="addContainer">{{ $t("addContainer") }}</button>
 
                     <!-- General -->
@@ -424,7 +432,7 @@ import { yaml } from "@codemirror/lang-yaml";
 import { python } from "@codemirror/lang-python";
 import { dracula as editorThemeDark, tomorrow as editorThemeLight } from "thememirror";
 import { lineNumbers, EditorView } from "@codemirror/view";
-import { parseDocument, Document } from "yaml";
+import { parseDocument, Document, isMap, isScalar, Scalar } from "yaml";
 
 import { FontAwesomeIcon } from "@fortawesome/vue-fontawesome";
 import {
@@ -442,6 +450,7 @@ import NetworkInput from "../components/NetworkInput.vue";
 import ExpandableBox from "../components/ExpandableBox.vue";
 import PathPicker from "../components/PathPicker.vue";
 import MissingVolumesDialog from "../components/MissingVolumesDialog.vue";
+import StackSnapshots from "../components/StackSnapshots.vue";
 import dotenv from "dotenv";
 import { ref } from "vue";
 import { useToast } from "vue-toastification";
@@ -459,6 +468,31 @@ const envDefault = "# VARIABLE=value #comment";
 
 let yamlErrorTimeout = null;
 
+/**
+ * Quote owner and mode of x-dockge.zfs: unquoted, 999:999 is a number for YAML 1.1 parsers (base 60)
+ * and 0700 loses its leading zero
+ * @param {Document} doc YAML document
+ * @returns {void}
+ */
+function quoteZfsRecipe(doc) {
+    const zfs = doc.getIn([ "x-dockge", "zfs" ], true);
+    if (!isMap(zfs)) {
+        return;
+    }
+    for (const item of zfs.items) {
+        if (!isMap(item.value)) {
+            continue;
+        }
+        for (const key of [ "owner", "mode" ]) {
+            const node = item.value.get(key, true);
+            if (isScalar(node)) {
+                node.value = String(node.value);
+                node.type = Scalar.QUOTE_DOUBLE;
+            }
+        }
+    }
+}
+
 let serviceStatusTimeout = null;
 let stackStorageTimeout = null;
 let dockerStatsTimeout = null;
@@ -469,6 +503,7 @@ export default {
         ExpandableBox,
         PathPicker,
         MissingVolumesDialog,
+        StackSnapshots,
         FontAwesomeIcon,
         CodeMirror,
         BModal,
@@ -760,6 +795,7 @@ export default {
                     if (this.yamlDoc) {
                         copyYAMLComments(doc, this.yamlDoc);
                     }
+                    quoteZfsRecipe(doc);
 
                     this.stack.composeYAML = doc.toString();
                     this.yamlDoc = doc;

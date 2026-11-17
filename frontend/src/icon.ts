@@ -68,6 +68,7 @@ import {
     faBoxArchive,
     faFolderPlus,
     faHardDrive,
+    faCamera,
 } from "@fortawesome/free-solid-svg-icons";
 
 library.add(
@@ -137,6 +138,7 @@ library.add(
     faBoxArchive,
     faFolderPlus,
     faHardDrive,
+    faCamera,
 );
 
 export { FontAwesomeIcon };

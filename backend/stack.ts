@@ -36,6 +36,8 @@ export interface DeployOptions {
     interactive? : boolean;
     /** The user confirmed the bind mounts into other stacks */
     acceptOtherStacks? : boolean;
+    /** update(): recursive snapshot before recreating the containers (undefined: the ZFS settings) */
+    snapshot? : boolean;
 }
 
 export class Stack {
@@ -735,6 +737,23 @@ export class Stack {
         return exitCode;
     }
 
+    get composeFileName() : string {
+        return this._composeFileName;
+    }
+
+    /**
+     * docker compose start: start the existing containers again, as they were (no recreation, no volume checks).
+     * Used after a snapshot taken with the containers stopped, and after a rollback.
+     */
+    async startContainers(socket? : DockgeSocket) : Promise<number> {
+        const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
+        const exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("start"), this.path, this.outputListener);
+        if (exitCode !== 0) {
+            throw new Error("Failed to start the containers, please check the terminal output for more information.");
+        }
+        return exitCode;
+    }
+
     async stop(socket? : DockgeSocket) : Promise<number> {
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("stop"), this.path, this.outputListener);
@@ -777,6 +796,18 @@ export class Stack {
         }
 
         await this.prepareVolumes(options);
+
+        // Automatic recursive snapshot of the stack dataset before the containers are recreated
+        const { snapshotBeforeUpdate } = await import("./zfs/snapshots");
+        const snapshot = await snapshotBeforeUpdate(this.server, this, options.snapshot);
+        if (snapshot) {
+            this.outputListener?.(`Snapshot ${snapshot.snapshot} taken before the update\n`);
+            for (const warning of snapshot.warnings) {
+                log.warn("stack", `${this.name}: ${warning}`);
+                this.outputListener?.("Warning: " + warning + "\n");
+            }
+        }
+
         exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("up", "-d", "--remove-orphans"), this.path, this.outputListener);
         if (exitCode !== 0) {
             throw new Error("Failed to restart, please check the terminal output for more information.");

@@ -159,6 +159,19 @@ const dryRunParam : JSONSchema = {
 };
 
 /**
+ * Destructive ZFS operations through the API: allowed by a setting, confirmed with the exact name of the target
+ */
+async function checkDestructive(confirm : unknown, target : unknown) {
+    const { getZfsSettings } = await import("../zfs/settings");
+    if (!(await getZfsSettings()).destructiveApi) {
+        throw new ValidationError("Destructive ZFS operations through the API are disabled (Settings → Storage → destructive operations through the API)");
+    }
+    if (typeof(target) !== "string" || !target || confirm !== target) {
+        throw new ValidationError(`Set confirm to the exact name of the target ("${String(target ?? "")}")`);
+    }
+}
+
+/**
  * Plan of the missing volumes of a saved stack, for dryRun
  */
 async function volumePlan(server : DockgeServer, stack : Stack, missingVolumes : unknown) {
@@ -185,7 +198,7 @@ async function volumePlan(server : DockgeServer, stack : Stack, missingVolumes :
     }
 }
 
-function stackAction(id : string, action : string, summary : string, run : (stack : Stack, args : LooseObject) => Promise<unknown>, destructive = false, volumes = false) : Operation {
+function stackAction(id : string, action : string, summary : string, run : (stack : Stack, args : LooseObject) => Promise<unknown>, destructive = false, volumes = false, extraParams : Record<string, JSONSchema> = {}) : Operation {
     return {
         id,
         method: "post",
@@ -200,6 +213,7 @@ function stackAction(id : string, action : string, summary : string, run : (stac
                 missingVolumes: missingVolumesParam,
                 dryRun: dryRunParam,
             } : {}),
+            ...extraParams,
         },
         required: [ "name" ],
         handler: async (args, server) => {
@@ -468,12 +482,18 @@ export const operations : Operation[] = [
     stackAction("stop_stack", "stop", "Stop the containers of a stack (docker compose stop)", (stack) => stack.stop()),
     stackAction("restart_stack", "restart", "Restart the containers of a stack (docker compose restart)", (stack) => stack.restart()),
     stackAction("down_stack", "down", "Stop and remove the containers and networks of a stack (docker compose down). Files and volumes are kept.", (stack) => stack.down()),
-    stackAction("update_stack", "update", "Pull the newest images and recreate the containers if the stack is running", async (stack, args) => {
+    stackAction("update_stack", "update", "Pull the newest images and recreate the containers if the stack is running. When the stack is a ZFS dataset, a recursive snapshot is taken before (setting, or snapshot: true / false).", async (stack, args) => {
         await stack.update(undefined, {
             missingVolumes: args.missingVolumes,
+            snapshot: args.snapshot === true || args.snapshot === "true" ? true : (args.snapshot === false || args.snapshot === "false" ? false : undefined),
         });
         imageUpdateChecker.checkStack(stack.name).catch(() => {});
-    }, false, true),
+    }, false, true, {
+        snapshot: {
+            type: "boolean",
+            description: "Recursive ZFS snapshot of the stack before recreating the containers (default: the ZFS settings)",
+        },
+    }),
     {
         id: "rename_stack",
         method: "post",
@@ -1088,6 +1108,151 @@ export const operations : Operation[] = [
                 mode: checked.mode,
                 recursive: args.recursive === true || args.recursive === "true",
             }, args.dryRun === true || args.dryRun === "true");
+        },
+    },
+    {
+        id: "list_snapshots",
+        method: "get",
+        path: "/stacks/:name/snapshots",
+        summary: "Snapshots of a stack that is a ZFS dataset (recursive: compose files and volume datasets), newest first",
+        description: "kind: manual (dockge-...), auto (dockge-auto-..., before update_stack), other (e.g. TrueNAS periodic tasks). complete=false: some datasets of the stack were created after it.",
+        tag: "Snapshots",
+        permission: "read",
+        readOnly: true,
+        params: {
+            name: stackName,
+        },
+        required: [ "name" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            const { listStackSnapshots } = await import("../zfs/snapshots");
+            return listStackSnapshots(server, stack.name);
+        },
+    },
+    {
+        id: "create_snapshot",
+        method: "post",
+        path: "/stacks/:name/snapshots",
+        summary: "Take a recursive snapshot of a stack (compose.yaml, .env and every volume dataset at the same instant)",
+        description: "With the containers running the copy is like after a power cut (fine for PostgreSQL / MySQL); stopFirst stops them during the snapshot.",
+        tag: "Snapshots",
+        permission: "write",
+        params: {
+            name: stackName,
+            label: {
+                type: "string",
+                description: "Optional label added to the name (letters, digits, - and _)",
+            },
+            stopFirst: {
+                type: "boolean",
+                default: false,
+            },
+            dryRun: dryRunParam,
+        },
+        required: [ "name" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            const { createStackSnapshot } = await import("../zfs/snapshots");
+            return createStackSnapshot(server, stack.name, {
+                label: typeof(args.label) === "string" ? args.label : undefined,
+                stopFirst: args.stopFirst === true || args.stopFirst === "true",
+                dryRun: args.dryRun === true || args.dryRun === "true",
+            });
+        },
+    },
+    {
+        id: "clone_stack",
+        method: "post",
+        path: "/stacks/:name/snapshots/:snapshot/clone",
+        summary: "Create a new stack from a snapshot (ZFS clones of every dataset of the stack). The new stack is not started.",
+        description: "Change container_name and published ports in the clone before starting it. The clones depend on the snapshot. On TrueNAS 25.04 a clone needs the API key of a full administrator.",
+        tag: "Snapshots",
+        permission: "write",
+        params: {
+            name: stackName,
+            snapshot: {
+                type: "string",
+                description: "Snapshot name (after @)",
+            },
+            newName: {
+                ...stackName,
+                description: "Name of the new stack",
+            },
+            dryRun: dryRunParam,
+        },
+        required: [ "name", "snapshot", "newName" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            const { cloneStack } = await import("../zfs/snapshots");
+            const result = await cloneStack(server, stack.name, String(args.snapshot ?? ""), String(args.newName ?? ""), args.dryRun === true || args.dryRun === "true");
+            server.sendStackList();
+            return result;
+        },
+    },
+    {
+        id: "rollback_snapshot",
+        method: "post",
+        path: "/stacks/:name/snapshots/:snapshot/rollback",
+        summary: "Roll a stack back to a snapshot: stop it, roll back every dataset, start it again. Snapshots newer than this one are DESTROYED.",
+        description: "Requires the ZFS setting \"destructive operations through the API\" and confirm equal to the snapshot name. Use dryRun first: it lists the snapshots that would be destroyed. On TrueNAS 25.04 a rollback needs the API key of a full administrator.",
+        tag: "Snapshots",
+        permission: "write",
+        destructive: true,
+        params: {
+            name: stackName,
+            snapshot: {
+                type: "string",
+                description: "Snapshot name (after @)",
+            },
+            confirm: {
+                type: "string",
+                description: "The snapshot name again",
+            },
+            dryRun: dryRunParam,
+        },
+        required: [ "name", "snapshot" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            const dryRun = args.dryRun === true || args.dryRun === "true";
+            if (!dryRun) {
+                await checkDestructive(args.confirm, args.snapshot);
+            }
+            const { rollbackStack } = await import("../zfs/snapshots");
+            const result = await rollbackStack(server, stack.name, String(args.snapshot ?? ""), dryRun);
+            server.sendStackList();
+            return result;
+        },
+    },
+    {
+        id: "delete_snapshot",
+        method: "delete",
+        path: "/stacks/:name/snapshots/:snapshot",
+        summary: "Delete a snapshot of a stack (recursive)",
+        description: "Requires the ZFS setting \"destructive operations through the API\" and confirm equal to the snapshot name.",
+        tag: "Snapshots",
+        permission: "write",
+        destructive: true,
+        params: {
+            name: stackName,
+            snapshot: {
+                type: "string",
+                description: "Snapshot name (after @)",
+            },
+            confirm: {
+                type: "string",
+                description: "The snapshot name again",
+            },
+            dryRun: dryRunParam,
+        },
+        required: [ "name", "snapshot" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            const dryRun = args.dryRun === true || args.dryRun === "true";
+            if (!dryRun) {
+                await checkDestructive(args.confirm, args.snapshot);
+            }
+            const { deleteStackSnapshot } = await import("../zfs/snapshots");
+            return deleteStackSnapshot(server, stack.name, String(args.snapshot ?? ""), dryRun);
         },
     },
     {
