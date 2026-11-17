@@ -41,6 +41,8 @@ export interface ZfsProvider {
     updateDataset(name : string, properties : DatasetProperties) : Promise<void>;
     /** Content of a folder of the host, and the datasets mounted in it (for the path picker) */
     listHostDirectory(dirPath : string, showFiles : boolean) : Promise<{ entries : HostEntry[], datasets : Map<string, string> }>;
+    /** Destroy a dataset; recursive: with its children (and the snapshots of all of them) */
+    deleteDataset(name : string, recursive : boolean) : Promise<void>;
     /** Snapshots of these datasets */
     listSnapshots(datasets : string[]) : Promise<SnapshotInfo[]>;
     /** Recursive: the same snapshot of every child dataset, at the same instant */
@@ -218,6 +220,12 @@ export class TrueNasProvider implements ZfsProvider {
                 datasets,
             };
         });
+    }
+
+    async deleteDataset(name : string, recursive : boolean) : Promise<void> {
+        await TrueNasClient.with(this.connection, (client) => client.call("pool.dataset.delete", [ name, {
+            recursive,
+        }]));
     }
 
     async listSnapshots(datasets : string[]) : Promise<SnapshotInfo[]> {

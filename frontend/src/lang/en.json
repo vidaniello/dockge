@@ -294,7 +294,7 @@
     "truenasUser": "TrueNAS user",
     "truenasApiKey": "API key",
     "truenasApiKeySaved": "Saved: leave empty to keep it",
-    "truenasRolesHint": "Use a dedicated user, not admin: give it a privilege with the DATASET_WRITE role only, then create an API key for that user. The key is stored in Dockge and never shown again.",
+    "truenasRolesHint": "Use a dedicated user, not admin: give it a privilege with the roles DATASET_WRITE (create datasets), DATASET_DELETE (delete a stack with its datasets), SNAPSHOT_WRITE and SNAPSHOT_DELETE (snapshots), then create an API key for that user. The key is stored in Dockge and never shown again.",
     "truenasFingerprint": "SHA-256 fingerprint of the certificate:",
     "truenasTrustCertificate": "Trust this certificate",
     "truenasTrustedFingerprint": "Trusted certificate:",
@@ -390,5 +390,10 @@
     "zfsAutoSnapshot": "Snapshot before \"Update\" (recursive, before the containers are recreated)",
     "zfsAutoSnapshotKeep": "Automatic snapshots to keep per stack",
     "zfsDestructiveApi": "Allow rollback and deletion of snapshots through the API (REST / MCP)",
-    "zfsSnapshotRolesHint": "Roles of the TrueNAS user: SNAPSHOT_WRITE to take and list snapshots, SNAPSHOT_DELETE to delete them (and to keep only the last automatic ones). On TrueNAS 25.04 rollback and clone are allowed only to a full administrator: with a limited key Dockge tells how to do them from TrueNAS."
+    "zfsSnapshotRolesHint": "Roles of the TrueNAS user: SNAPSHOT_WRITE to take and list snapshots, SNAPSHOT_DELETE to delete them (and to keep only the last automatic ones). On TrueNAS 25.04 rollback and clone are allowed only to a full administrator: with a limited key Dockge tells how to do them from TrueNAS.",
+    "deleteStackDestroy": "Delete the stack and all its datasets",
+    "deleteStackDestroyWarning": "Warning: deleting the stack also destroys every dataset inside it, including the dataset of the stack, with all their snapshots. Make sure you have a backup of the datasets you care about. It cannot be undone.",
+    "deleteStackSnapshots": "and 1 snapshot | and {n} snapshots",
+    "deleteStackKeep": "Remove only the containers and keep the data (the stack stays in the list)",
+    "deleteStackTypeName": "Type the stack name to confirm"
 }

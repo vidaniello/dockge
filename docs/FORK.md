@@ -46,7 +46,7 @@ x-dockge:
 - Ruoli TrueNAS: `SNAPSHOT_WRITE` e `SNAPSHOT_DELETE`. In TrueNAS 25.04 rollback e clone sono permessi solo a un amministratore completo.
 - API: `list_snapshots`, `create_snapshot`, `clone_stack`, `rollback_snapshot`, `delete_snapshot` (le ultime due solo con l'impostazione "operazioni distruttive via API" e `confirm` uguale al nome), `update_stack` accetta `snapshot`.
 
-- Rinomina ed eliminazione di uno stack che è (o contiene) un dataset non sono ancora gestite: la rinomina viene rifiutata, l'eliminazione rimuove i container e conserva i dati. Il dataset si rinomina o distrugge da TrueNAS.
+- **Elimina** su uno stack che è un dataset chiede se eliminare anche tutti i suoi dataset (con i loro snapshot: serve il ruolo `DATASET_DELETE`, si conferma scrivendo il nome dello stack) oppure solo i container, conservando i dati. La rinomina di uno stack che è un dataset non è ancora gestita (si rinomina il dataset da TrueNAS).
 - Per vedere i dataset creati sull'host dopo l'avvio di Dockge, la cartella degli stack va montata con `propagation: rslave`:
 
 ```yaml

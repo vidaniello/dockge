@@ -10,7 +10,7 @@ import { hasVariable, splitShort } from "../bind-mounts";
 import { log } from "../log";
 import { getZfsSettings, isTrueNasConfigured } from "./settings";
 import { DatasetInfo, getProvider } from "./provider";
-import { TrueNasCertificateError } from "./truenas-client";
+import { TrueNasCertificateError, TrueNasClient } from "./truenas-client";
 import { compareRecipe, parseRecipes, PropertyDifference, VolumeRecipe } from "./recipe";
 import {
     datasetOf, findMount, getPropagation, getSpace, isInside, isZfsByStatfs, mountAt, MountEntry, Propagation, readMountInfo
@@ -295,6 +295,8 @@ let providerCache : { key : string, time : number, check : ProviderCheck } | und
 export function resetProviderCache() {
     providerCache = undefined;
     datasetCache.clear();
+    // A new check must log in again (e.g. a changed key, a newly trusted certificate)
+    TrueNasClient.closeShared();
 }
 
 /**

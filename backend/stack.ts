@@ -515,7 +515,11 @@ export class Stack {
         };
     }
 
-    async delete(socket? : DockgeSocket) : Promise<number> {
+    /**
+     * @param socket Socket
+     * @param options destroyDatasets: when the stack is a ZFS dataset, destroy it with its children and snapshots
+     */
+    async delete(socket? : DockgeSocket, options : { destroyDatasets? : boolean } = {}) : Promise<number> {
         const terminalName = getComposeTerminalName(socket?.endpoint ?? "", this.name);
         let exitCode = await Terminal.exec(this.server, socket, terminalName, "docker", this.getComposeOptions("down", "--remove-orphans"), this.path, this.outputListener);
         if (exitCode !== 0) {
@@ -526,7 +530,12 @@ export class Stack {
         const { datasetsInside } = await import("./zfs/datasets");
         const datasets = datasetsInside(this.path);
         if (datasets.length > 0) {
-            throw new ValidationError(`The containers were removed. The stack folder is (or contains) a ZFS dataset (${datasets.join(", ")}): its data was kept. To delete it, destroy the dataset in TrueNAS.`);
+            if (!options.destroyDatasets) {
+                throw new ValidationError(`The containers were removed. The stack folder is (or contains) a ZFS dataset (${datasets.join(", ")}): its data was kept. Choose to delete the datasets too, or destroy them in TrueNAS.`);
+            }
+            const { destroyStackDatasets } = await import("./zfs/datasets");
+            await destroyStackDatasets(this.server, this.name);
+            return exitCode;
         }
 
         // Remove the stack folder

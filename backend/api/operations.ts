@@ -451,7 +451,7 @@ export const operations : Operation[] = [
         method: "delete",
         path: "/stacks/:name",
         summary: "Stop and remove the containers of a stack and DELETE its folder (compose.yaml, .env and any data stored inside it)",
-        description: "Named volumes are not removed. A stack that is (or contains) a ZFS dataset is not deleted: the containers are removed and the data is kept (destroy the dataset in TrueNAS). Requires confirm=true.",
+        description: "Named volumes are not removed. Requires confirm=true. A stack that is a ZFS dataset: with datasets=keep (default) the containers are removed and the data is kept; datasets=destroy destroys the stack dataset with all its volume datasets and snapshots (requires the setting \"destructive operations through the API\" and confirmName equal to the stack name).",
         tag: "Stacks",
         permission: "write",
         destructive: true,
@@ -461,14 +461,30 @@ export const operations : Operation[] = [
                 type: "boolean",
                 description: "Must be true",
             },
+            datasets: {
+                type: "string",
+                enum: [ "keep", "destroy" ],
+                default: "keep",
+                description: "Stack that is a ZFS dataset: keep its datasets, or destroy them with their snapshots",
+            },
+            confirmName: {
+                type: "string",
+                description: "With datasets=destroy: the stack name again",
+            },
         },
         required: [ "name", "confirm" ],
         handler: async (args, server) => {
             if (args.confirm !== true && args.confirm !== "true") {
                 throw new ValidationError("Set confirm=true to delete the stack");
             }
+            const destroyDatasets = args.datasets === "destroy";
+            if (destroyDatasets) {
+                await checkDestructive(args.confirmName, args.name);
+            }
             const stack = await getManagedStack(server, args.name);
-            const result = await runWithOutput(stack, () => stack.delete());
+            const result = await runWithOutput(stack, () => stack.delete(undefined, {
+                destroyDatasets,
+            }));
             server.sendStackList();
             return result;
         },

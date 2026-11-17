@@ -366,3 +366,83 @@ export async function setVolumePermissions(server : DockgeServer, stackName : st
     log.info("zfs", `Permissions of ${display} in stack ${stackName}: owner ${options.owner ?? "-"}, mode ${options.mode ?? "-"}, recursive ${options.recursive === true}, ${result.changed} entries`);
     return result;
 }
+
+/**
+ * What deleting a stack would destroy: its datasets and their snapshots
+ */
+export async function getStackDeletionInfo(server : DockgeServer, stackName : string) {
+    const target = path.join(fs.realpathSync(server.stacksDir), stackName);
+    const datasets = datasetsInside(target);
+    const stackDataset = isDatasetMount(target);
+    let snapshots : number | null = null;
+    let canDestroy = false;
+    let reason : string | null = null;
+    if (datasets.length > 0) {
+        try {
+            const { provider } = await getCreationContext(server);
+            canDestroy = stackDataset !== null && datasets.every((dataset) => dataset === stackDataset || dataset.startsWith(stackDataset + "/"));
+            if (!canDestroy) {
+                reason = "The stack folder is not a dataset but contains datasets: delete them in TrueNAS";
+            }
+            try {
+                // A recursive snapshot is one per dataset: count the names
+                snapshots = new Set((await provider.listSnapshots(datasets)).map((snapshot) => snapshot.name)).size;
+            } catch (e) {
+                // SNAPSHOT_READ missing: the count is not shown
+            }
+        } catch (e) {
+            reason = e instanceof Error ? e.message : String(e);
+        }
+    }
+    return {
+        stack: stackName,
+        datasets,
+        stackDataset,
+        snapshots,
+        canDestroy,
+        reason,
+    };
+}
+
+/**
+ * Destroy the dataset of a stack with all its children and snapshots, then remove what is left of the folder.
+ * The containers must already be removed.
+ */
+export async function destroyStackDatasets(server : DockgeServer, stackName : string) : Promise<string[]> {
+    const { status, provider } = await getCreationContext(server);
+    const target = path.join(status.stacksDir, stackName);
+    const stackDataset = isDatasetMount(target);
+    const datasets = datasetsInside(target);
+    if (!stackDataset || datasets.some((dataset) => dataset !== stackDataset && !dataset.startsWith(stackDataset + "/"))) {
+        throw new ValidationError("The stack folder is not a dataset but contains datasets: delete them in TrueNAS");
+    }
+    checkSubtree(status, stackDataset);
+
+    log.info("zfs", `Destroying dataset ${stackDataset} of stack ${stackName} with its children and snapshots: ${datasets.join(", ")}`);
+    try {
+        await provider.deleteDataset(stackDataset, true);
+    } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (/not authori[sz]ed|EACCES|ENOTAUTHORIZED/i.test(message)) {
+            throw new ValidationError(`TrueNAS refused to delete the datasets: ${message}. The TrueNAS user needs the DATASET_DELETE role.`);
+        }
+        if (/clone|dependent/i.test(message)) {
+            throw new ValidationError(`The datasets have clones (stacks cloned from their snapshots): delete or promote those first. ${message}`);
+        }
+        throw e;
+    }
+
+    // rm -rf only once the datasets are unmounted here: otherwise it would go into them
+    const start = Date.now();
+    while (datasetsInside(target).length > 0) {
+        if (Date.now() - start > MOUNT_WAIT_MS) {
+            throw new Error(`The datasets were destroyed but Dockge still sees them mounted at ${target}: the folder was not removed`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    await fsAsync.rm(target, {
+        recursive: true,
+        force: true,
+    });
+    return datasets;
+}

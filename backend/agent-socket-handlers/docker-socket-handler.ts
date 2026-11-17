@@ -80,16 +80,24 @@ export class DockerSocketHandler extends AgentSocketHandler {
             }
         });
 
-        agentSocket.on("deleteStack", async (name : unknown, callback) => {
+        // options (optional): { destroyDatasets: true, confirm: <stack name> }
+        agentSocket.on("deleteStack", async (name : unknown, ...rest : unknown[]) => {
+            const { options, callback } = optionsAndCallback(rest);
             try {
                 checkLogin(socket);
                 if (typeof(name) !== "string") {
                     throw new ValidationError("Name must be a string");
                 }
+                const destroyDatasets = options.destroyDatasets === true;
+                if (destroyDatasets && options.confirm !== name) {
+                    throw new ValidationError("Type the stack name to confirm");
+                }
                 const stack = await Stack.getStack(server, name);
 
                 try {
-                    await stack.delete(socket);
+                    await stack.delete(socket, {
+                        destroyDatasets,
+                    });
                 } catch (e) {
                     server.sendStackList();
                     throw e;
@@ -485,6 +493,23 @@ export class DockerSocketHandler extends AgentSocketHandler {
                     msg: "snapshotDeleted",
                     msgi18n: true,
                     ...result,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // What deleting a stack would destroy (datasets, snapshots), for the delete dialog
+        agentSocket.on("getStackDeletionInfo", async (stackName : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (typeof(stackName) !== "string" || !/^[a-z0-9_-]+$/.test(stackName)) {
+                    throw new ValidationError("Invalid stack name");
+                }
+                const { getStackDeletionInfo } = await import("../zfs/datasets");
+                callbackResult({
+                    ok: true,
+                    ...(await getStackDeletionInfo(server, stackName)),
                 }, callback);
             } catch (e) {
                 callbackError(e, callback);

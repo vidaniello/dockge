@@ -258,7 +258,7 @@
     "truenasUser": "Utente TrueNAS",
     "truenasApiKey": "Chiave API",
     "truenasApiKeySaved": "Salvata: lascia vuoto per non cambiarla",
-    "truenasRolesHint": "Usa un utente dedicato, non admin: dagli un privilegio con il solo ruolo DATASET_WRITE, poi crea una chiave API per quell'utente. La chiave resta in Dockge e non viene più mostrata.",
+    "truenasRolesHint": "Usa un utente dedicato, non admin: dagli un privilegio con i ruoli DATASET_WRITE (creare dataset), DATASET_DELETE (eliminare uno stack con i suoi dataset), SNAPSHOT_WRITE e SNAPSHOT_DELETE (snapshot), poi crea una chiave API per quell'utente. La chiave resta in Dockge e non viene più mostrata.",
     "truenasFingerprint": "Impronta SHA-256 del certificato:",
     "truenasTrustCertificate": "Fidati di questo certificato",
     "truenasTrustedFingerprint": "Certificato considerato affidabile:",
@@ -354,5 +354,10 @@
     "zfsAutoSnapshot": "Snapshot prima di \"Aggiorna\" (ricorsivo, prima di ricreare i container)",
     "zfsAutoSnapshotKeep": "Snapshot automatici da conservare per stack",
     "zfsDestructiveApi": "Permetti rollback ed eliminazione di snapshot dall'API (REST / MCP)",
-    "zfsSnapshotRolesHint": "Ruoli dell'utente TrueNAS: SNAPSHOT_WRITE per fare ed elencare gli snapshot, SNAPSHOT_DELETE per eliminarli (e conservare solo gli ultimi automatici). Su TrueNAS 25.04 rollback e clone sono permessi solo a un amministratore completo: con una chiave limitata Dockge spiega come farli da TrueNAS."
+    "zfsSnapshotRolesHint": "Ruoli dell'utente TrueNAS: SNAPSHOT_WRITE per fare ed elencare gli snapshot, SNAPSHOT_DELETE per eliminarli (e conservare solo gli ultimi automatici). Su TrueNAS 25.04 rollback e clone sono permessi solo a un amministratore completo: con una chiave limitata Dockge spiega come farli da TrueNAS.",
+    "deleteStackDestroy": "Elimina lo stack e tutti i suoi dataset",
+    "deleteStackDestroyWarning": "Attenzione: eliminando lo stack si eliminano anche tutti i dataset contenuti nello stack, compreso il dataset dello stack, con tutti i loro snapshot. Assicurati di aver fatto prima un backup dei dataset che ti interessano. Non si può annullare.",
+    "deleteStackSnapshots": "e 1 snapshot | e {n} snapshot",
+    "deleteStackKeep": "Rimuovi solo i container e conserva i dati (lo stack resta nell'elenco)",
+    "deleteStackTypeName": "Scrivi il nome dello stack per confermare"
 }
