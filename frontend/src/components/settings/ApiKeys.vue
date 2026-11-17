@@ -25,6 +25,29 @@
                 </tbody>
             </table>
 
+            <!-- Public address behind a reverse proxy -->
+            <div v-if="config" class="mb-3">
+                <label class="form-label small mb-1" for="api-public-url">{{ $t("apiPublicUrl") }}</label>
+                <div class="input-group input-group-sm">
+                    <input
+                        id="api-public-url"
+                        v-model="publicUrlInput"
+                        class="form-control"
+                        :placeholder="'https://dockge-api.example.com'"
+                        :disabled="config.publicUrlFromEnv"
+                        @keyup.enter="savePublicUrl"
+                    />
+                    <button v-if="!config.publicUrlFromEnv" class="btn btn-normal" :disabled="savingPublicUrl || publicUrlInput === (config.publicUrl || '')" @click="savePublicUrl">{{ $t("Save") }}</button>
+                </div>
+                <div class="form-text">
+                    {{ config.publicUrlFromEnv ? $t("apiPublicUrlFromEnv") : $t("apiPublicUrlHint") }}
+                </div>
+                <div v-if="config.publicUrl" class="form-text">{{ $t("apiInternalUrl", [ internalURL ]) }}</div>
+                <div v-else-if="config.trustProxy" class="form-text text-warning">
+                    <font-awesome-icon icon="exclamation-circle" /> {{ $t("apiPublicUrlMissing") }}
+                </div>
+            </div>
+
             <div v-if="config" class="small">
                 <div v-if="config.port">
                     {{ $t("apiDedicatedPort", [ (config.hostname || "0.0.0.0") + ":" + config.port ]) }}
@@ -151,10 +174,17 @@ export default {
                 expiresInDays: 0,
                 password: "",
             },
+            publicUrlInput: "",
+            savingPublicUrl: false,
         };
     },
     computed: {
+        /** Addresses shown: the public one when set, otherwise the one this page was opened with */
         baseURL() {
+            return this.config?.publicUrl || this.internalURL;
+        },
+        /** Address built from the name this page was opened with and the API port */
+        internalURL() {
             if (this.config?.port) {
                 const protocol = this.config.tls ? "https" : location.protocol.replace(":", "");
                 return `${protocol}://${this.config.hostname && this.config.hostname !== "0.0.0.0" ? this.config.hostname : location.hostname}:${this.config.port}`;
@@ -184,8 +214,21 @@ export default {
                 if (res.ok) {
                     this.keys = res.keys;
                     this.config = res.config;
+                    this.publicUrlInput = res.config.publicUrl || "";
                 } else {
                     this.$root.toastRes(res);
+                }
+            });
+        },
+
+        savePublicUrl() {
+            this.savingPublicUrl = true;
+            this.$root.getSocket().emit("setApiPublicUrl", this.publicUrlInput, (res) => {
+                this.savingPublicUrl = false;
+                this.$root.toastRes(res);
+                if (res.ok) {
+                    this.config.publicUrl = res.publicUrl;
+                    this.publicUrlInput = res.publicUrl || "";
                 }
             });
         },

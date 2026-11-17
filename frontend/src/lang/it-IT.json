@@ -422,5 +422,10 @@
     "filesConvertConfirm": "{0} ha gli a capo di Windows (CRLF). Convertirli in LF (necessario per gli script e per la maggior parte dei file di configurazione)?",
     "filesOk": "OK",
     "filesClose": "Chiudi",
-    "filesDelete": "Elimina"
+    "filesDelete": "Elimina",
+    "apiPublicUrl": "Indirizzo pubblico delle API (reverse proxy)",
+    "apiPublicUrlHint": "Se le API si raggiungono da un reverse proxy con un nome proprio (es. https://dockge-api.example.com), scrivilo qui: gli indirizzi qui sopra e l'esempio MCP lo usano. Lascia vuoto per usare l'indirizzo di questa pagina.",
+    "apiPublicUrlFromEnv": "Impostato da DOCKGE_API_PUBLIC_URL.",
+    "apiInternalUrl": "Indirizzo della porta API senza il proxy: {0}",
+    "apiPublicUrlMissing": "È indicato un reverse proxy fidato (DOCKGE_TRUST_PROXY) ma nessun indirizzo pubblico: gli indirizzi qui sopra potrebbero non essere quelli da usare dall'esterno."
 }

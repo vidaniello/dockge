@@ -100,6 +100,7 @@ L'immagine fissa `docker compose` alla **v5.0.2** (binario ufficiale, verificato
 | `DOCKGE_API_HOSTNAME` | tutti | IP su cui ascolta la porta API (dentro il container). |
 | `DOCKGE_API_SSL_KEY` / `DOCKGE_API_SSL_CERT` / `DOCKGE_API_SSL_KEY_PASSPHRASE` | quelli di `DOCKGE_SSL_*` | Certificato TLS della porta API. |
 | `DOCKGE_TRUST_PROXY` | – | Reverse proxy fidati (`true`, numero di salti, oppure IP/subnet separati da virgola, es. `loopback,192.168.1.2`). Dockge si fida di `X-Forwarded-Proto: https` solo da questi. |
+| `DOCKGE_API_PUBLIC_URL` | – | Indirizzo pubblico delle API dietro un reverse proxy (es. `https://dockge-api.example.com`), mostrato in Impostazioni → Chiavi API e nell'esempio MCP. In alternativa si scrive nello stesso pannello; la variabile ha la precedenza. |
 | `DOCKGE_API_ALLOW_HTTP` | `false` | `true` accetta le chiavi anche su HTTP. Sconsigliato: la chiave viaggia in chiaro. |
 
 ## Esempio: TrueNAS SCALE
