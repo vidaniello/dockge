@@ -177,6 +177,7 @@
                     <!-- Snapshots of a stack that is a ZFS dataset -->
                     <StackSnapshots
                         v-if="!isEditMode && !isAdd && stackStorage && stackStorage.isDataset && storageStatus && storageStatus.canCreate"
+                        ref="snapshots"
                         :endpoint="endpoint"
                         :stack-name="stack.name"
                         @rolled-back="loadStack"
@@ -1220,6 +1221,8 @@ export default {
             this.emitWithVolumes("updateStack", [ this.stack.name ], {}, (res) => {
                 this.processing = false;
                 this.$root.toastRes(res);
+                // The update may have taken an automatic snapshot (and deleted the oldest ones)
+                this.$refs.snapshots?.load();
             });
         },
 
