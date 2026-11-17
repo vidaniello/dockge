@@ -123,6 +123,8 @@ Altri componenti che usano lo stesso raggio ma sono già corretti: `.list-group`
 
 ## 9. Chiavi API: indirizzo pubblico delle API dietro un reverse proxy
 
+> **Stato**: fatto. Campo "Indirizzo pubblico delle API" in Impostazioni → Chiavi API e variabile `DOCKGE_API_PUBLIC_URL` (con precedenza; il campo diventa di sola lettura), usati per REST, OpenAPI, MCP e l'esempio MCP; indirizzo interno mostrato a parte; avviso con un proxy fidato e nessun indirizzo pubblico; validazione (`https://`, salvo `DOCKGE_API_ALLOW_HTTP=true`; niente `/api/v1` o `/mcp` finali).
+
 Con le API dietro un reverse proxy HTTPS (es. Nginx Proxy Manager, con un nome dedicato come `dockge-api.test.trexon` che punta alla porta `DOCKGE_API_PORT` del container), il pannello Impostazioni → Chiavi API mostra un indirizzo sbagliato: `https://dockge.test.trexon:5002` invece di `https://dockge-api.test.trexon`.
 
 - **Perché**: in `frontend/src/components/settings/ApiKeys.vue` (computed `baseURL`) l'indirizzo è costruito nel browser con il nome con cui si è aperto Dockge + `DOCKGE_API_PORT`. Dockge non può sapere con quale nome e porta le API si raggiungono dall'esterno. Sono sbagliati gli indirizzi REST, OpenAPI e MCP e l'esempio di configurazione per il client MCP.

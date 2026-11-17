@@ -458,5 +458,10 @@
     "filesConvertConfirm": "{0} has Windows line endings (CRLF). Convert them to LF (needed for scripts and most configuration files)?",
     "filesOk": "OK",
     "filesClose": "Close",
-    "filesDelete": "Delete"
+    "filesDelete": "Delete",
+    "apiPublicUrl": "Public address of the API (reverse proxy)",
+    "apiPublicUrlHint": "If the API is reached through a reverse proxy with its own name (e.g. https://dockge-api.example.com), write it here: the addresses above and the MCP example use it. Leave empty to use the address of this page.",
+    "apiPublicUrlFromEnv": "Set by DOCKGE_API_PUBLIC_URL.",
+    "apiInternalUrl": "Address of the API port without the proxy: {0}",
+    "apiPublicUrlMissing": "A reverse proxy is trusted (DOCKGE_TRUST_PROXY) but no public address is set: the addresses above may not be the ones to use from outside."
 }

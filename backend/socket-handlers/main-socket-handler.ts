@@ -1,5 +1,6 @@
 // @ts-ignore
 import composerize from "composerize";
+import { getApiPublicUrl, setApiPublicUrl } from "../api/public-url";
 import { SocketHandler } from "../socket-handler.js";
 import { DockgeServer } from "../dockge-server";
 import { log } from "../log";
@@ -314,16 +315,35 @@ export class MainSocketHandler extends SocketHandler {
         socket.on("getApiKeyList", async (callback) => {
             try {
                 checkLogin(socket);
+                const publicUrl = await getApiPublicUrl();
                 callbackResult({
                     ok: true,
                     keys: await listApiKeys(),
                     config: {
+                        publicUrl: publicUrl.url,
+                        publicUrlFromEnv: publicUrl.fromEnv,
                         port: server.apiPort ?? null,
                         hostname: server.apiHostname ?? null,
                         tls: !!((process.env.DOCKGE_API_SSL_KEY || server.config.sslKey) && (process.env.DOCKGE_API_SSL_CERT || server.config.sslCert)),
                         trustProxy: process.env.DOCKGE_TRUST_PROXY || null,
                         allowHttp: process.env.DOCKGE_API_ALLOW_HTTP === "true",
                     },
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Public address of the API behind a reverse proxy (only for the addresses shown in the panel)
+        socket.on("setApiPublicUrl", async (url : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                const saved = await setApiPublicUrl(url);
+                callbackResult({
+                    ok: true,
+                    msg: "Saved",
+                    msgi18n: true,
+                    publicUrl: saved,
                 }, callback);
             } catch (e) {
                 callbackError(e, callback);
