@@ -87,6 +87,15 @@ export function splitShort(volume : string) : { host : string, rest : string } |
  * @param stackDir Absolute path of the stack folder (before the rename)
  */
 export function analyzeBindMounts(content : string, stackDir : string) : BindMountAnalysis {
+    return analyzeBindMountsUnder(content, stackDir, ".");
+}
+
+/**
+ * Find the bind mounts with an absolute path inside oldDir, and the value they get when oldDir becomes
+ * newRelative (a path relative to the stack folder: "." for the stack folder itself, "./library" for a volume)
+ */
+export function analyzeBindMountsUnder(content : string, oldDir : string, newRelative : string) : BindMountAnalysis {
+    const stackDir = oldDir;
     const result : BindMountAnalysis = {
         rewrites: [],
         skipped: [],
@@ -119,7 +128,8 @@ export function analyzeBindMounts(content : string, stackDir : string) : BindMou
         if (!path.isAbsolute(source) || !isInside(path.resolve(source), dir)) {
             return;
         }
-        const to = toRelative(path.resolve(source), dir);
+        const inner = toRelative(path.resolve(source), dir);
+        const to = newRelative === "." ? inner : (inner === "." ? newRelative : newRelative.replace(/\/+$/, "") + inner.slice(1));
         result.rewrites.push({
             service,
             path: valuePath,

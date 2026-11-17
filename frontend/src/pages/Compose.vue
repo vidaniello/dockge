@@ -68,7 +68,7 @@
                 </div>
 
                 <button v-if="isEditMode && !isAdd" class="btn btn-normal" :disabled="processing" @click="discardStack">{{ $t("discardStack") }}</button>
-                <button v-if="!isEditMode" class="btn btn-danger" :disabled="processing" @click="showDeleteDialog = !showDeleteDialog">
+                <button v-if="!isEditMode" class="btn btn-danger" :disabled="processing" @click="openDeleteDialog">
                     <font-awesome-icon icon="trash" class="me-1" />
                     {{ $t("deleteStack") }}
                 </button>
@@ -174,9 +174,20 @@
                         />
                     </div>
 
+                    <!-- Storage on ZFS: volumes, conversions, adoptions -->
+                    <StackStorage
+                        v-if="!isEditMode && !isAdd && stackStorage && storageStatus && storageStatus.zfs && storageStatus.canCreate"
+                        :endpoint="endpoint"
+                        :stack-name="stack.name"
+                        :storage="stackStorage"
+                        :status="storageStatus"
+                        @changed="onStorageChanged"
+                    />
+
                     <!-- Snapshots of a stack that is a ZFS dataset -->
                     <StackSnapshots
                         v-if="!isEditMode && !isAdd && stackStorage && stackStorage.isDataset && storageStatus && storageStatus.canCreate"
+                        ref="snapshots"
                         :endpoint="endpoint"
                         :stack-name="stack.name"
                         @rolled-back="loadStack"
@@ -419,8 +430,30 @@
             </BModal>
 
             <!-- Delete Dialog -->
-            <BModal v-model="showDeleteDialog" :cancelTitle="$t('cancel')" :okTitle="$t('deleteStack')" okVariant="danger" @ok="deleteDialog">
-                {{ $t("deleteStackMsg") }}
+            <BModal v-model="showDeleteDialog" :title="$t('deleteStack')" :cancelTitle="$t('cancel')" :okTitle="$t('deleteStack')" okVariant="danger" :okDisabled="!deleteReady" @ok="deleteDialog">
+                <template v-if="deleteInfo && deleteInfo.datasets.length > 0">
+                    <div class="form-check mb-2">
+                        <input id="delete-destroy" v-model="deleteMode" class="form-check-input" type="radio" value="destroy" :disabled="!deleteInfo.canDestroy">
+                        <label class="form-check-label fw-bold" for="delete-destroy">{{ $t("deleteStackDestroy") }}</label>
+                    </div>
+                    <div v-if="deleteMode === 'destroy'" class="alert alert-danger small delete-warning">
+                        <div class="mb-2">{{ $t("deleteStackDestroyWarning") }}</div>
+                        <div v-for="dataset in deleteInfo.datasets" :key="dataset"><code>{{ dataset }}</code></div>
+                        <div v-if="deleteInfo.snapshots" class="mt-2">{{ $tc("deleteStackSnapshots", deleteInfo.snapshots) }}</div>
+                    </div>
+                    <div v-if="!deleteInfo.canDestroy && deleteInfo.reason" class="form-text text-warning mb-2">{{ deleteInfo.reason }}</div>
+                    <div class="form-check mb-2">
+                        <input id="delete-keep" v-model="deleteMode" class="form-check-input" type="radio" value="keep">
+                        <label class="form-check-label" for="delete-keep">{{ $t("deleteStackKeep") }}</label>
+                    </div>
+                    <template v-if="deleteMode === 'destroy'">
+                        <label class="form-label mt-2" for="delete-confirm">{{ $t("deleteStackTypeName") }}</label>
+                        <input id="delete-confirm" v-model="deleteConfirm" class="form-control" autocomplete="off" :placeholder="stack.name" />
+                    </template>
+                </template>
+                <template v-else>
+                    {{ $t("deleteStackMsg") }}
+                </template>
             </BModal>
         </div>
     </transition>
@@ -451,6 +484,7 @@ import ExpandableBox from "../components/ExpandableBox.vue";
 import PathPicker from "../components/PathPicker.vue";
 import MissingVolumesDialog from "../components/MissingVolumesDialog.vue";
 import StackSnapshots from "../components/StackSnapshots.vue";
+import StackStorage from "../components/StackStorage.vue";
 import dotenv from "dotenv";
 import { ref } from "vue";
 import { useToast } from "vue-toastification";
@@ -504,6 +538,7 @@ export default {
         PathPicker,
         MissingVolumesDialog,
         StackSnapshots,
+        StackStorage,
         FontAwesomeIcon,
         CodeMirror,
         BModal,
@@ -573,6 +608,10 @@ export default {
             isEditMode: false,
             submitted: false,
             showDeleteDialog: false,
+            // ZFS: what deleting the stack destroys, and the choice keep / destroy
+            deleteInfo: null,
+            deleteMode: "destroy",
+            deleteConfirm: "",
             newContainerName: "",
             stopServiceStatusTimeout: false,
             stopDockerStatsTimeout: false,
@@ -609,6 +648,13 @@ export default {
 
         extensionsEnv() {
             return [ this.editorTheme, this.envLanguage, this.lineNumbersExtension, this.focusEffect ];
+        },
+
+        deleteReady() {
+            if (this.deleteInfo?.datasets?.length > 0 && this.deleteMode === "destroy") {
+                return this.deleteConfirm === this.stack.name;
+            }
+            return true;
         },
 
         /**
@@ -1037,6 +1083,15 @@ export default {
          * @param {string} source Host part of the volume
          * @returns {object|null} Entry of getStackStorage
          */
+        /**
+         * A conversion / adoption changed the datasets and maybe compose.yaml
+         * @returns {void}
+         */
+        onStorageChanged() {
+            this.loadStack();
+            this.scheduleStackStorage(0);
+        },
+
         setVolumeRecipe(name, recipe) {
             if (!this.jsonConfig["x-dockge"] || typeof this.jsonConfig["x-dockge"] !== "object") {
                 this.jsonConfig["x-dockge"] = {};
@@ -1220,6 +1275,8 @@ export default {
             this.emitWithVolumes("updateStack", [ this.stack.name ], {}, (res) => {
                 this.processing = false;
                 this.$root.toastRes(res);
+                // The update may have taken an automatic snapshot (and deleted the oldest ones)
+                this.$refs.snapshots?.load();
             });
         },
 
@@ -1306,8 +1363,30 @@ export default {
             });
         },
 
+        openDeleteDialog() {
+            this.deleteInfo = null;
+            this.deleteMode = "destroy";
+            this.deleteConfirm = "";
+            this.showDeleteDialog = true;
+            if (this.storageStatus?.zfs) {
+                this.$root.emitAgent(this.endpoint, "getStackDeletionInfo", this.stack.name, (res) => {
+                    if (res.ok) {
+                        this.deleteInfo = res;
+                        if (!res.canDestroy) {
+                            this.deleteMode = "keep";
+                        }
+                    }
+                });
+            }
+        },
+
         deleteDialog() {
-            this.$root.emitAgent(this.endpoint, "deleteStack", this.stack.name, (res) => {
+            const destroy = this.deleteInfo?.datasets?.length > 0 && this.deleteMode === "destroy";
+            const options = destroy ? {
+                destroyDatasets: true,
+                confirm: this.deleteConfirm,
+            } : {};
+            this.$root.emitAgent(this.endpoint, "deleteStack", this.stack.name, options, (res) => {
                 this.$root.toastRes(res);
                 if (res.ok) {
                     this.$router.push("/");
@@ -1452,6 +1531,11 @@ export default {
 
 <style scoped lang="scss">
 @import "../styles/vars.scss";
+
+.delete-warning {
+    border-radius: 10px;
+    word-break: break-all;
+}
 
 .storage-icon,
 .storage-muted {

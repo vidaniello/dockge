@@ -37,6 +37,16 @@ x-dockge:
    Sui dataset esistenti Dockge non cambia niente da solo: se le proprietà differiscono, l'editor mostra `≠ x-dockge.zfs`; un clic sul badge le applica al dataset (dopo conferma).
 - **Aggiungi percorso** nei volumi apre il selettore con due schede: **In questo stack** (cartelle e dataset dello stack, oppure un nuovo volume `./nome` con tipo Generico / Database / File grandi e proprietario, scritti in `x-dockge.zfs`; il dataset nasce al deploy) e **Cartella dell'host**. Se all'utente TrueNAS dai anche il ruolo `FILESYSTEM_ATTRS_READ`, la scheda dell'host legge tutto l'host dall'API, senza montare `/mnt` in Dockge.
 - Prima di deploy / avvio / aggiornamento, se un volume punta dentro la cartella di **un altro stack** Dockge lo segnala (una volta per percorso): i due stack restano legati.
+### Convertire e adottare (stack e volumi esistenti)
+
+- Il riquadro **Archiviazione** nella pagina dello stack elenca i volumi con il loro tipo e due azioni:
+  - **Converti in dataset** (una cartella `./volume`, o tutto lo stack con "Converti lo stack in dataset"): Dockge ferma lo stack, fa uno snapshot di sicurezza, sposta la cartella da parte, crea il dataset, ricopia tutto (proprietari, permessi, ACL, link), verifica e riavvia. La cartella originale resta come `<nome>.dockge-backup-<data>` finché non la elimini dallo stesso riquadro. Se qualcosa va storto, la cartella torna com'era.
+  - **Sposta nello stack** per un dataset esterno (es. `/mnt/pool/appdata/immich/library`): diventa `./library` dello stack senza copiare niente, e il compose viene corretto. Prima elenca condivisioni SMB/NFS, task e altri stack che lo usano. In TrueNAS 25.04 serve una chiave admin.
+- In **Impostazioni → Archiviazione**:
+  - se la cartella degli stack è una cartella dentro un dataset, **Script per spostarla in un dataset** genera lo script da eseguire nella shell di TrueNAS;
+  - **Cerca dati nascosti** trova il contenuto rimasto sotto un dataset creato sopra una cartella piena, e **Recupera** lo sposta in una cartella visibile accanto.
+- API: `convert_to_dataset` (job: `list_jobs`, `get_job`, `cancel_job`), `abort_conversion`, `list_migration_backups`, `delete_migration_backup`, `adopt_dataset`, `get_stacks_folder_script`, `find_hidden_data`, `recover_hidden_data`.
+
 ### Snapshot (stack che sono dataset)
 
 - Il riquadro **Snapshot** nella pagina dello stack fa snapshot ricorsivi (compose, `.env` e tutti i volumi nello stesso istante), con etichetta e opzione "ferma i container durante lo snapshot", e li elenca insieme a quelli dei task periodici di TrueNAS.
@@ -46,7 +56,7 @@ x-dockge:
 - Ruoli TrueNAS: `SNAPSHOT_WRITE` e `SNAPSHOT_DELETE`. In TrueNAS 25.04 rollback e clone sono permessi solo a un amministratore completo.
 - API: `list_snapshots`, `create_snapshot`, `clone_stack`, `rollback_snapshot`, `delete_snapshot` (le ultime due solo con l'impostazione "operazioni distruttive via API" e `confirm` uguale al nome), `update_stack` accetta `snapshot`.
 
-- Rinomina ed eliminazione di uno stack che è (o contiene) un dataset non sono ancora gestite: la rinomina viene rifiutata, l'eliminazione rimuove i container e conserva i dati. Il dataset si rinomina o distrugge da TrueNAS.
+- **Elimina** su uno stack che è un dataset chiede se eliminare anche tutti i suoi dataset (con i loro snapshot: serve il ruolo `DATASET_DELETE`, si conferma scrivendo il nome dello stack) oppure solo i container, conservando i dati. La **rinomina** di uno stack che è un dataset rinomina il dataset (in TrueNAS 25.04 serve una chiave admin).
 - Per vedere i dataset creati sull'host dopo l'avvio di Dockge, la cartella degli stack va montata con `propagation: rslave`:
 
 ```yaml

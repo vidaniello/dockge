@@ -80,16 +80,24 @@ export class DockerSocketHandler extends AgentSocketHandler {
             }
         });
 
-        agentSocket.on("deleteStack", async (name : unknown, callback) => {
+        // options (optional): { destroyDatasets: true, confirm: <stack name> }
+        agentSocket.on("deleteStack", async (name : unknown, ...rest : unknown[]) => {
+            const { options, callback } = optionsAndCallback(rest);
             try {
                 checkLogin(socket);
                 if (typeof(name) !== "string") {
                     throw new ValidationError("Name must be a string");
                 }
+                const destroyDatasets = options.destroyDatasets === true;
+                if (destroyDatasets && options.confirm !== name) {
+                    throw new ValidationError("Type the stack name to confirm");
+                }
                 const stack = await Stack.getStack(server, name);
 
                 try {
-                    await stack.delete(socket);
+                    await stack.delete(socket, {
+                        destroyDatasets,
+                    });
                 } catch (e) {
                     server.sendStackList();
                     throw e;
@@ -485,6 +493,158 @@ export class DockerSocketHandler extends AgentSocketHandler {
                     msg: "snapshotDeleted",
                     msgi18n: true,
                     ...result,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // What deleting a stack would destroy (datasets, snapshots), for the delete dialog
+        agentSocket.on("getStackDeletionInfo", async (stackName : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                if (typeof(stackName) !== "string" || !/^[a-z0-9_-]+$/.test(stackName)) {
+                    throw new ValidationError("Invalid stack name");
+                }
+                const { getStackDeletionInfo } = await import("../zfs/datasets");
+                callbackResult({
+                    ok: true,
+                    ...(await getStackDeletionInfo(server, stackName)),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // Conversion of a folder (./path) or of the stack folder (path null) into a dataset: plan, then job
+        agentSocket.on("convertToDataset", async (stackName : unknown, relative : unknown, dryRun : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                const { convertToDataset } = await import("../zfs/migrate");
+                const result = await convertToDataset(server, String(stackName ?? ""), typeof(relative) === "string" && relative ? relative : null, dryRun === true, () => server.sendStackList());
+                callbackResult({
+                    ok: true,
+                    ...result,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("adoptDataset", async (stackName : unknown, dataset : unknown, relative : unknown, dryRun : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                const { adoptDataset } = await import("../zfs/adopt");
+                const result = await adoptDataset(server, String(stackName ?? ""), String(dataset ?? ""), String(relative ?? ""), dryRun === true);
+                if (dryRun !== true) {
+                    server.sendStackList();
+                }
+                callbackResult({
+                    ...result,
+                    ok: true,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("getStacksFolderScript", async (callback) => {
+            try {
+                checkLogin(socket);
+                const { stacksFolderScript } = await import("../zfs/scripts");
+                callbackResult({
+                    ok: true,
+                    ...(await stacksFolderScript(server)),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("findHiddenData", async (callback) => {
+            try {
+                checkLogin(socket);
+                const { findHiddenData } = await import("../zfs/hidden");
+                callbackResult({
+                    ok: true,
+                    list: await findHiddenData(server),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("recoverHiddenData", async (mountpoint : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                const { recoverHiddenData } = await import("../zfs/hidden");
+                const result = await recoverHiddenData(server, String(mountpoint ?? ""));
+                callbackResult({
+                    ...result,
+                    ok: true,
+                    msg: "hiddenDataRecovered",
+                    msgi18n: true,
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("getZfsJob", async (id : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                const { getJob, jobSummary } = await import("../zfs/jobs");
+                const job = getJob(String(id ?? ""));
+                if (!job) {
+                    throw new ValidationError("Job not found");
+                }
+                callbackResult({
+                    ok: true,
+                    job: jobSummary(job, 20),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("cancelZfsJob", async (id : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                const { cancelJob, jobSummary } = await import("../zfs/jobs");
+                callbackResult({
+                    ok: true,
+                    job: jobSummary(cancelJob(String(id ?? "")), 20),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        // options (optional): { dryRun: true } to get the size first
+        agentSocket.on("deleteMigrationBackup", async (stackName : unknown, name : unknown, ...rest : unknown[]) => {
+            const { options, callback } = optionsAndCallback(rest);
+            try {
+                checkLogin(socket);
+                const { deleteMigrationBackup } = await import("../zfs/migrate");
+                callbackResult({
+                    ok: true,
+                    ...(await deleteMigrationBackup(server, String(stackName ?? ""), String(name ?? ""), options.dryRun === true)),
+                }, callback);
+            } catch (e) {
+                callbackError(e, callback);
+            }
+        });
+
+        agentSocket.on("abortConversion", async (stackName : unknown, relative : unknown, callback) => {
+            try {
+                checkLogin(socket);
+                const { abortInterruptedConversion } = await import("../zfs/migrate");
+                const result = await abortInterruptedConversion(server, String(stackName ?? ""), typeof(relative) === "string" && relative ? relative : null);
+                callbackResult({
+                    ...result,
+                    ok: true,
+                    msg: "conversionAborted",
+                    msgi18n: true,
                 }, callback);
             } catch (e) {
                 callbackError(e, callback);

@@ -451,7 +451,7 @@ export const operations : Operation[] = [
         method: "delete",
         path: "/stacks/:name",
         summary: "Stop and remove the containers of a stack and DELETE its folder (compose.yaml, .env and any data stored inside it)",
-        description: "Named volumes are not removed. A stack that is (or contains) a ZFS dataset is not deleted: the containers are removed and the data is kept (destroy the dataset in TrueNAS). Requires confirm=true.",
+        description: "Named volumes are not removed. Requires confirm=true. A stack that is a ZFS dataset: with datasets=keep (default) the containers are removed and the data is kept; datasets=destroy destroys the stack dataset with all its volume datasets and snapshots (requires the setting \"destructive operations through the API\" and confirmName equal to the stack name).",
         tag: "Stacks",
         permission: "write",
         destructive: true,
@@ -461,14 +461,30 @@ export const operations : Operation[] = [
                 type: "boolean",
                 description: "Must be true",
             },
+            datasets: {
+                type: "string",
+                enum: [ "keep", "destroy" ],
+                default: "keep",
+                description: "Stack that is a ZFS dataset: keep its datasets, or destroy them with their snapshots",
+            },
+            confirmName: {
+                type: "string",
+                description: "With datasets=destroy: the stack name again",
+            },
         },
         required: [ "name", "confirm" ],
         handler: async (args, server) => {
             if (args.confirm !== true && args.confirm !== "true") {
                 throw new ValidationError("Set confirm=true to delete the stack");
             }
+            const destroyDatasets = args.datasets === "destroy";
+            if (destroyDatasets) {
+                await checkDestructive(args.confirmName, args.name);
+            }
             const stack = await getManagedStack(server, args.name);
-            const result = await runWithOutput(stack, () => stack.delete());
+            const result = await runWithOutput(stack, () => stack.delete(undefined, {
+                destroyDatasets,
+            }));
             server.sendStackList();
             return result;
         },
@@ -1253,6 +1269,248 @@ export const operations : Operation[] = [
             }
             const { deleteStackSnapshot } = await import("../zfs/snapshots");
             return deleteStackSnapshot(server, stack.name, String(args.snapshot ?? ""), dryRun);
+        },
+    },
+    {
+        id: "convert_to_dataset",
+        method: "post",
+        path: "/stacks/:name/storage/convert",
+        summary: "Convert an existing folder into a ZFS dataset: ./path of a stack (the stack must be a dataset), or the stack folder itself (path omitted). Runs as a job.",
+        description: "Stops the stack if running, takes a safety snapshot, moves the folder to <name>.dockge-backup-<date>, creates the dataset, copies the content back (cp -a, block cloning when possible), verifies, starts the stack again. The copy is kept until delete_migration_backup. Use dryRun first: it tells size, free space and what is stopped. Follow the job with get_job.",
+        tag: "Storage",
+        permission: "write",
+        params: {
+            name: stackName,
+            path: {
+                type: "string",
+                description: "./volume to convert; omit to convert the stack folder",
+            },
+            dryRun: dryRunParam,
+        },
+        required: [ "name" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            const { convertToDataset } = await import("../zfs/migrate");
+            const relative = typeof(args.path) === "string" && args.path.trim() && args.path.trim() !== "." ? args.path : null;
+            return convertToDataset(server, stack.name, relative, args.dryRun === true || args.dryRun === "true", () => server.sendStackList());
+        },
+    },
+    {
+        id: "abort_conversion",
+        method: "post",
+        path: "/stacks/:name/storage/convert/abort",
+        summary: "Undo a conversion interrupted by a restart of Dockge: destroy the new dataset and put the original folder back from its copy",
+        description: "Requires the setting \"destructive operations through the API\" and confirm equal to the stack name.",
+        tag: "Storage",
+        permission: "write",
+        destructive: true,
+        params: {
+            name: stackName,
+            path: {
+                type: "string",
+                description: "./volume, or omit for the stack folder",
+            },
+            confirm: {
+                type: "string",
+                description: "The stack name again",
+            },
+        },
+        required: [ "name" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            await checkDestructive(args.confirm, stack.name);
+            const { abortInterruptedConversion } = await import("../zfs/migrate");
+            const relative = typeof(args.path) === "string" && args.path.trim() && args.path.trim() !== "." ? args.path : null;
+            return abortInterruptedConversion(server, stack.name, relative);
+        },
+    },
+    {
+        id: "list_migration_backups",
+        method: "get",
+        path: "/stacks/:name/storage/backups",
+        summary: "Copies of the original folders kept by the conversions to dataset",
+        tag: "Storage",
+        permission: "read",
+        readOnly: true,
+        params: {
+            name: stackName,
+        },
+        required: [ "name" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            const { listMigrationBackups } = await import("../zfs/migrate");
+            return (await listMigrationBackups(server, stack.name)).map((backup) => ({
+                name: backup.name,
+                kind: backup.kind,
+            }));
+        },
+    },
+    {
+        id: "delete_migration_backup",
+        method: "delete",
+        path: "/stacks/:name/storage/backups/:backup",
+        summary: "Delete a copy kept by a conversion to dataset (job)",
+        description: "Requires the setting \"destructive operations through the API\" and confirm equal to the backup name.",
+        tag: "Storage",
+        permission: "write",
+        destructive: true,
+        params: {
+            name: stackName,
+            backup: {
+                type: "string",
+                description: "Name as returned by list_migration_backups",
+            },
+            confirm: {
+                type: "string",
+            },
+            dryRun: dryRunParam,
+        },
+        required: [ "name", "backup" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            const dryRun = args.dryRun === true || args.dryRun === "true";
+            if (!dryRun) {
+                await checkDestructive(args.confirm, args.backup);
+            }
+            const { deleteMigrationBackup } = await import("../zfs/migrate");
+            return deleteMigrationBackup(server, stack.name, String(args.backup ?? ""), dryRun);
+        },
+    },
+    {
+        id: "adopt_dataset",
+        method: "post",
+        path: "/stacks/:name/storage/adopt",
+        summary: "Move an existing dataset (same pool) into a stack as ./path, and rewrite the bind mounts that used its absolute path",
+        description: "Instant (zfs rename, nothing is copied). The stack is stopped and started again. Shares and tasks of TrueNAS that use the dataset, and other stacks that use it, are listed: use dryRun first. On TrueNAS 25.04 renaming a dataset needs the API key of a full administrator.",
+        tag: "Storage",
+        permission: "write",
+        params: {
+            name: stackName,
+            dataset: {
+                type: "string",
+                description: "Dataset to adopt, e.g. tank/appdata/immich/library",
+            },
+            path: {
+                type: "string",
+                description: "Where it goes in the stack, e.g. ./library",
+            },
+            dryRun: dryRunParam,
+        },
+        required: [ "name", "dataset", "path" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            const { adoptDataset } = await import("../zfs/adopt");
+            const result = await adoptDataset(server, stack.name, String(args.dataset ?? ""), String(args.path ?? ""), args.dryRun === true || args.dryRun === "true");
+            server.sendStackList();
+            return result;
+        },
+    },
+    {
+        id: "get_stacks_folder_script",
+        method: "get",
+        path: "/storage/stacks-folder-script",
+        summary: "When the stacks folder is a plain folder inside a dataset: shell script to run on TrueNAS (as root) that moves it into its own dataset",
+        tag: "Storage",
+        permission: "read",
+        readOnly: true,
+        params: {},
+        handler: async (_args, server) => {
+            const { stacksFolderScript } = await import("../zfs/scripts");
+            return stacksFolderScript(server);
+        },
+    },
+    {
+        id: "find_hidden_data",
+        method: "get",
+        path: "/storage/hidden",
+        summary: "Data hidden under the datasets of the stacks folder (content of a folder over which a dataset was created): still takes space, invisible",
+        description: "Starts the Dockge image for a moment with non-recursive bind mounts (Docker 25 or later).",
+        tag: "Storage",
+        permission: "read",
+        readOnly: true,
+        params: {},
+        handler: async (_args, server) => {
+            const { findHiddenData } = await import("../zfs/hidden");
+            return findHiddenData(server);
+        },
+    },
+    {
+        id: "recover_hidden_data",
+        method: "post",
+        path: "/storage/hidden/recover",
+        summary: "Move the data hidden under a mount point into a visible folder next to it (<name>.dockge-hidden-<date>)",
+        tag: "Storage",
+        permission: "write",
+        params: {
+            mountpoint: {
+                type: "string",
+                description: "Mount point as returned by find_hidden_data",
+            },
+        },
+        required: [ "mountpoint" ],
+        handler: async (args, server) => {
+            const { recoverHiddenData } = await import("../zfs/hidden");
+            return recoverHiddenData(server, String(args.mountpoint ?? ""));
+        },
+    },
+    {
+        id: "list_jobs",
+        method: "get",
+        path: "/jobs",
+        summary: "ZFS jobs (conversions, deletion of backups, ...), running and recent",
+        tag: "Storage",
+        permission: "read",
+        readOnly: true,
+        params: {
+            stack: {
+                ...stackName,
+                description: "Only the jobs of this stack (optional)",
+            },
+        },
+        handler: async (args) => {
+            const { listJobs, jobSummary } = await import("../zfs/jobs");
+            return listJobs(typeof(args.stack) === "string" && args.stack ? args.stack : undefined).map((job) => jobSummary(job, 5));
+        },
+    },
+    {
+        id: "get_job",
+        method: "get",
+        path: "/jobs/:id",
+        summary: "A ZFS job: step, progress, bytes copied, log, result or error",
+        tag: "Storage",
+        permission: "read",
+        readOnly: true,
+        params: {
+            id: {
+                type: "string",
+            },
+        },
+        required: [ "id" ],
+        handler: async (args) => {
+            const { getJob, jobSummary } = await import("../zfs/jobs");
+            const job = getJob(String(args.id ?? ""));
+            if (!job) {
+                throw new ValidationError("Job not found");
+            }
+            return jobSummary(job, 100);
+        },
+    },
+    {
+        id: "cancel_job",
+        method: "post",
+        path: "/jobs/:id/cancel",
+        summary: "Ask a running ZFS job to stop (a conversion is undone and the folder put back)",
+        tag: "Storage",
+        permission: "write",
+        params: {
+            id: {
+                type: "string",
+            },
+        },
+        required: [ "id" ],
+        handler: async (args) => {
+            const { cancelJob, jobSummary } = await import("../zfs/jobs");
+            return jobSummary(cancelJob(String(args.id ?? "")), 5);
         },
     },
     {

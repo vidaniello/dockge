@@ -27,6 +27,7 @@ const MCP_INSTRUCTIONS = `Dockge manages Docker Compose stacks on this server.
 - Bind mounts: data of a stack goes in its own folder with a relative path (./data:/data); get_stack_storage shows whether each path is a ZFS dataset, a folder or missing. Use absolute host paths (list_host_paths) only for data shared between stacks or outside the stacks folder.
 - get_storage_status tells whether the stacks folder is on ZFS and whether stacks and volumes can be created as datasets (canCreate). Then create_stack makes the stack a dataset, and deploy_stack / start_stack / update_stack create the missing ./xxx volumes as datasets or folders (missingVolumes; with "fail" you get the list). x-dockge.zfs in compose.yaml sets their properties, e.g. x-dockge: {zfs: {pgdata: {recordsize: 16K, owner: "999:999"}}}.
 - set_dataset_properties / set_volume_permissions change existing datasets and folders of a stack.
+- Existing folders: convert_to_dataset (a ./volume, or the stack folder) runs as a job (get_job); adopt_dataset moves an external dataset into a stack as ./name. Use dryRun first. Copies kept by conversions: list_migration_backups / delete_migration_backup.
 - Snapshots (stack datasets): list_snapshots, create_snapshot, clone_stack; rollback_snapshot and delete_snapshot destroy data: always run them with dryRun first and ask the user.
 - Use dryRun to see what would be created before writing.
 - To publish a port on one IP use IP:HOST:CONTAINER (list_host_ips).

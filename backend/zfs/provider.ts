@@ -41,6 +41,16 @@ export interface ZfsProvider {
     updateDataset(name : string, properties : DatasetProperties) : Promise<void>;
     /** Content of a folder of the host, and the datasets mounted in it (for the path picker) */
     listHostDirectory(dirPath : string, showFiles : boolean) : Promise<{ entries : HostEntry[], datasets : Map<string, string> }>;
+    /** Mount point → dataset name, for all the datasets of the host */
+    listMountpoints() : Promise<Map<string, string>>;
+    /** Shares, tasks, apps... that use a dataset ([{ type, service, attachments }]) */
+    getAttachments(name : string) : Promise<{ type : string, attachments : string[] }[]>;
+    /** Rename a dataset (its children follow; with an inherited mountpoint it is mounted at the new path) */
+    renameDataset(name : string, newName : string) : Promise<void>;
+    /** Set or change user properties (key with ":") */
+    setUserProperties(name : string, properties : Record<string, string>) : Promise<void>;
+    /** Destroy a dataset; recursive: with its children (and the snapshots of all of them) */
+    deleteDataset(name : string, recursive : boolean) : Promise<void>;
     /** Snapshots of these datasets */
     listSnapshots(datasets : string[]) : Promise<SnapshotInfo[]>;
     /** Recursive: the same snapshot of every child dataset, at the same instant */
@@ -218,6 +228,60 @@ export class TrueNasProvider implements ZfsProvider {
                 datasets,
             };
         });
+    }
+
+    async listMountpoints() : Promise<Map<string, string>> {
+        return TrueNasClient.with(this.connection, async (client) => {
+            const all = await client.call<unknown[]>("pool.dataset.query", [
+                [],
+                {
+                    extra: {
+                        retrieve_children: false,
+                        properties: [ "mountpoint" ],
+                        retrieve_user_props: false,
+                    },
+                },
+            ]);
+            const result = new Map<string, string>();
+            for (const dataset of flatten(Array.isArray(all) ? all : [])) {
+                if (typeof dataset.mountpoint === "string" && dataset.mountpoint) {
+                    result.set(dataset.mountpoint, String(dataset.name ?? dataset.id));
+                }
+            }
+            return result;
+        });
+    }
+
+    async getAttachments(name : string) : Promise<{ type : string, attachments : string[] }[]> {
+        return TrueNasClient.with(this.connection, async (client) => {
+            const list = await client.call<{ type? : string, service? : string, attachments? : unknown[] }[]>("pool.dataset.attachments", [ name ]);
+            return (Array.isArray(list) ? list : []).map((item) => ({
+                type: String(item.type ?? item.service ?? "?"),
+                attachments: (item.attachments ?? []).map(String),
+            }));
+        });
+    }
+
+    async renameDataset(name : string, newName : string) : Promise<void> {
+        // TrueNAS 25.04 has no pool.dataset.rename: zfs.dataset.rename has no role, only a full administrator can call it
+        await TrueNasClient.with(this.connection, (client) => client.call("zfs.dataset.rename", [ name, {
+            new_name: newName,
+        }]));
+    }
+
+    async setUserProperties(name : string, properties : Record<string, string>) : Promise<void> {
+        await TrueNasClient.with(this.connection, (client) => client.call("pool.dataset.update", [ name, {
+            user_properties_update: Object.entries(properties).map(([ key, value ]) => ({
+                key,
+                value,
+            })),
+        }]));
+    }
+
+    async deleteDataset(name : string, recursive : boolean) : Promise<void> {
+        await TrueNasClient.with(this.connection, (client) => client.call("pool.dataset.delete", [ name, {
+            recursive,
+        }]));
     }
 
     async listSnapshots(datasets : string[]) : Promise<SnapshotInfo[]> {

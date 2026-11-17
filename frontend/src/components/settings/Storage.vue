@@ -63,6 +63,7 @@
                 <div class="fw-bold mb-1">{{ problemText(problem, "storageProblem") }}</div>
                 <div class="remedy">{{ problemText(problem, "storageRemedy") }}</div>
                 <pre v-if="problem.code === 'mountPropagationPrivate'" class="mt-2 mb-0 snippet">{{ propagationSnippet }}</pre>
+                <button v-if="problem.code === 'stacksFolderNotDataset'" class="btn btn-sm btn-normal mt-2" @click="loadScript">{{ $t("stacksScriptButton") }}</button>
                 <template v-if="problem.code === 'truenasCertificate' && problem.params.fingerprint">
                     <div class="mt-2 small">{{ $t("truenasFingerprint") }}</div>
                     <code class="fingerprint">{{ problem.params.fingerprint }}</code>
@@ -147,6 +148,31 @@
             </template>
         </template>
 
+        <!-- Data hidden under the datasets -->
+        <template v-if="status && status.zfs">
+            <h5 class="mt-4 mb-2">{{ $t("hiddenData") }}</h5>
+            <div class="form-text mb-2">{{ $t("hiddenDataHint") }}</div>
+            <button class="btn btn-normal btn-sm" :disabled="hiddenLoading" @click="findHidden">{{ $t("hiddenDataSearch") }}</button>
+            <div v-if="hiddenError" class="alert alert-danger small mt-2 rounded-3">{{ hiddenError }}</div>
+            <div v-if="hidden && hidden.length === 0" class="small text-muted mt-2">{{ $t("hiddenDataNone") }}</div>
+            <ul v-if="hidden && hidden.length > 0" class="list-group mt-2">
+                <li v-for="item in hidden" :key="item.mountpoint" class="list-group-item">
+                    <div class="d-flex align-items-center flex-wrap gap-2">
+                        <code>{{ item.mountpoint }}</code>
+                        <span class="small">{{ $t("hiddenDataFound", [ item.entries, formatBytes(item.bytes), item.dataset ]) }}</span>
+                        <button class="btn btn-sm btn-normal ms-auto" :disabled="hiddenLoading" @click="recoverHidden(item)">{{ $t("hiddenDataRecover") }}</button>
+                    </div>
+                    <div class="small text-muted">{{ item.sample.join(", ") }}</div>
+                </li>
+            </ul>
+        </template>
+
+        <!-- Script to move the stacks folder into a dataset -->
+        <BModal v-model="showScript" :title="$t('stacksScriptTitle')" size="lg" :okTitle="$t('stacksScriptCopy')" :cancelTitle="$t('cancel')" @ok="copyScript">
+            <p class="small">{{ $t("stacksScriptIntro") }}</p>
+            <pre class="script">{{ script }}</pre>
+        </BModal>
+
         <button class="btn btn-normal btn-sm mt-3" :disabled="loading" @click="load(true)">
             <font-awesome-icon icon="arrows-rotate" class="me-1" />
             {{ $t("storageRefresh") }}
@@ -155,9 +181,13 @@
 </template>
 
 <script>
-import { formatBytes, storageProblemText } from "../../util-frontend";
+import { BModal } from "bootstrap-vue-next";
+import { copyToClipboard, formatBytes, storageProblemText } from "../../util-frontend";
 
 export default {
+    components: {
+        BModal,
+    },
     data() {
         return {
             endpoint: "",
@@ -166,6 +196,11 @@ export default {
             status: null,
             settings: null,
             saving: false,
+            hidden: null,
+            hiddenLoading: false,
+            hiddenError: "",
+            showScript: false,
+            script: "",
             form: {
                 truenasUrl: "",
                 truenasUsername: "",
@@ -225,6 +260,59 @@ export default {
                 if (res.ok) {
                     this.applySettings(res.settings);
                 }
+            });
+        },
+
+        loadScript() {
+            this.$root.emitAgent(this.endpoint, "getStacksFolderScript", (res) => {
+                if (res.ok) {
+                    this.script = res.script;
+                    this.showScript = true;
+                } else {
+                    this.$root.toastRes(res);
+                }
+            });
+        },
+
+        async copyScript() {
+            if (await copyToClipboard(this.script)) {
+                this.$root.toastRes({
+                    ok: true,
+                    msg: "stacksScriptCopied",
+                    msgi18n: true,
+                });
+            }
+        },
+
+        findHidden() {
+            this.hiddenLoading = true;
+            this.hiddenError = "";
+            this.$root.emitAgent(this.endpoint, "findHiddenData", (res) => {
+                this.hiddenLoading = false;
+                if (res.ok) {
+                    this.hidden = res.list;
+                } else {
+                    this.hiddenError = res.msg;
+                }
+            });
+        },
+
+        recoverHidden(item) {
+            if (!window.confirm(this.$t("hiddenDataRecoverConfirm", [ item.mountpoint ]))) {
+                return;
+            }
+            this.hiddenLoading = true;
+            this.$root.emitAgent(this.endpoint, "recoverHiddenData", item.mountpoint, (res) => {
+                this.hiddenLoading = false;
+                this.$root.toastRes(res);
+                if (res.ok && res.folder) {
+                    this.$root.toastRes({
+                        ok: true,
+                        msg: res.folder,
+                        msgi18n: false,
+                    });
+                }
+                this.findHidden();
             });
         },
 
@@ -297,6 +385,13 @@ export default {
 
 .keep-input {
     width: 100px;
+}
+
+.script {
+    max-height: 50vh;
+    overflow: auto;
+    font-size: 12px;
+    white-space: pre;
 }
 
 .fingerprint {

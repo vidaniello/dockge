@@ -11,7 +11,9 @@ import { ValidationError } from "../util-server";
  *   (plain ws:// from another IP), and the key would travel in clear text.
  * - The certificate must be valid for a public CA, or match the SHA-256 fingerprint the user trusted (TrueNAS uses a
  *   self-signed certificate by default). The key is sent only after the certificate was checked.
- * - One connection per operation: connect, log in, run the calls, close.
+ * - One authenticated connection, reused: TrueNAS allows 20 logins per minute per IP (calls made before
+ *   authenticating are rate limited, "[EBUSY] Rate Limit Exceeded"); calls of an authenticated session are not.
+ *   It is closed after IDLE_MS without calls, and opened again when needed.
  */
 
 export interface TrueNasConnection {
@@ -36,6 +38,7 @@ export class TrueNasCertificateError extends TrueNasError {
 }
 
 const CONNECT_TIMEOUT_MS = 15 * 1000;
+const IDLE_MS = 60 * 1000;
 const CALL_TIMEOUT_MS = 60 * 1000;
 
 export function normalizeTrueNasUrl(value : string) : string {
@@ -251,13 +254,76 @@ export class TrueNasClient {
     /**
      * Connect, run, close
      */
+    get isOpen() : boolean {
+        return this.socket?.readyState === WebSocket.OPEN;
+    }
+
+    /**
+     * Run calls on the shared authenticated connection (opened, or opened again, when needed)
+     */
     static async with<T>(connection : TrueNasConnection, run : (client : TrueNasClient) => Promise<T>) : Promise<T> {
-        const client = new TrueNasClient(connection);
-        await client.connect();
+        const key = JSON.stringify([ connection.url, connection.username, connection.apiKey, connection.fingerprint ]);
+        if (shared && shared.key !== key) {
+            TrueNasClient.closeShared();
+        }
+        if (!shared || (!shared.connecting && !shared.client.isOpen)) {
+            const client = new TrueNasClient(connection);
+            const entry : SharedConnection = {
+                key,
+                client,
+                connecting: null,
+                idle: undefined,
+                active: 0,
+            };
+            entry.connecting = client.connect().finally(() => {
+                entry.connecting = null;
+            });
+            shared = entry;
+            entry.connecting.catch(() => {
+                if (shared === entry) {
+                    shared = undefined;
+                }
+            });
+        }
+        const entry = shared;
+        if (entry.connecting) {
+            await entry.connecting;
+        }
+        clearTimeout(entry.idle);
+        entry.active++;
         try {
-            return await run(client);
+            return await run(entry.client);
         } finally {
-            client.close();
+            entry.active--;
+            if (entry.active === 0) {
+                entry.idle = setTimeout(() => {
+                    if (shared === entry && entry.active === 0) {
+                        TrueNasClient.closeShared();
+                    }
+                }, IDLE_MS);
+            }
+        }
+    }
+
+    /**
+     * Close the shared connection (settings changed, or idle)
+     */
+    static closeShared() {
+        if (shared) {
+            clearTimeout(shared.idle);
+            shared.client.close();
+            shared = undefined;
         }
     }
 }
+
+interface SharedConnection {
+    key : string;
+    client : TrueNasClient;
+    connecting : Promise<void> | null;
+    idle : NodeJS.Timeout | undefined;
+    /** Operations running on it */
+    active : number;
+}
+
+let shared : SharedConnection | undefined;

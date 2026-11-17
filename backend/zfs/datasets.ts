@@ -366,3 +366,145 @@ export async function setVolumePermissions(server : DockgeServer, stackName : st
     log.info("zfs", `Permissions of ${display} in stack ${stackName}: owner ${options.owner ?? "-"}, mode ${options.mode ?? "-"}, recursive ${options.recursive === true}, ${result.changed} entries`);
     return result;
 }
+
+/**
+ * What deleting a stack would destroy: its datasets and their snapshots
+ */
+export async function getStackDeletionInfo(server : DockgeServer, stackName : string) {
+    const target = path.join(fs.realpathSync(server.stacksDir), stackName);
+    const datasets = datasetsInside(target);
+    const stackDataset = isDatasetMount(target);
+    let snapshots : number | null = null;
+    let canDestroy = false;
+    let reason : string | null = null;
+    if (datasets.length > 0) {
+        try {
+            const { provider } = await getCreationContext(server);
+            canDestroy = stackDataset !== null && datasets.every((dataset) => dataset === stackDataset || dataset.startsWith(stackDataset + "/"));
+            if (!canDestroy) {
+                reason = "The stack folder is not a dataset but contains datasets: delete them in TrueNAS";
+            }
+            try {
+                // A recursive snapshot is one per dataset: count the names
+                snapshots = new Set((await provider.listSnapshots(datasets)).map((snapshot) => snapshot.name)).size;
+            } catch (e) {
+                // SNAPSHOT_READ missing: the count is not shown
+            }
+        } catch (e) {
+            reason = e instanceof Error ? e.message : String(e);
+        }
+    }
+    return {
+        stack: stackName,
+        datasets,
+        stackDataset,
+        snapshots,
+        canDestroy,
+        reason,
+    };
+}
+
+/**
+ * Destroy the dataset of a stack with all its children and snapshots, then remove what is left of the folder.
+ * The containers must already be removed.
+ */
+export async function destroyStackDatasets(server : DockgeServer, stackName : string) : Promise<string[]> {
+    const { status, provider } = await getCreationContext(server);
+    const target = path.join(status.stacksDir, stackName);
+    const stackDataset = isDatasetMount(target);
+    const datasets = datasetsInside(target);
+    if (!stackDataset || datasets.some((dataset) => dataset !== stackDataset && !dataset.startsWith(stackDataset + "/"))) {
+        throw new ValidationError("The stack folder is not a dataset but contains datasets: delete them in TrueNAS");
+    }
+    checkSubtree(status, stackDataset);
+
+    log.info("zfs", `Destroying dataset ${stackDataset} of stack ${stackName} with its children and snapshots: ${datasets.join(", ")}`);
+    try {
+        await provider.deleteDataset(stackDataset, true);
+    } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (/not authori[sz]ed|EACCES|ENOTAUTHORIZED/i.test(message)) {
+            throw new ValidationError(`TrueNAS refused to delete the datasets: ${message}. The TrueNAS user needs the DATASET_DELETE role.`);
+        }
+        if (/clone|dependent/i.test(message)) {
+            throw new ValidationError(`The datasets have clones (stacks cloned from their snapshots): delete or promote those first. ${message}`);
+        }
+        throw e;
+    }
+
+    // rm -rf only once the datasets are unmounted here: otherwise it would go into them
+    const start = Date.now();
+    while (datasetsInside(target).length > 0) {
+        if (Date.now() - start > MOUNT_WAIT_MS) {
+            throw new Error(`The datasets were destroyed but Dockge still sees them mounted at ${target}: the folder was not removed`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    await fsAsync.rm(target, {
+        recursive: true,
+        force: true,
+    });
+    return datasets;
+}
+
+export interface StackDatasetRename {
+    from : string;
+    to : string;
+    oldName : string;
+    newName : string;
+    target : string;
+}
+
+/**
+ * Check that a stack that is a dataset can be renamed (before anything is stopped)
+ */
+export async function planStackDatasetRename(server : DockgeServer, oldName : string, newName : string) : Promise<StackDatasetRename> {
+    const { status } = await getCreationContext(server);
+    const source = path.join(status.stacksDir, oldName);
+    const stackDataset = isDatasetMount(source);
+    const datasets = datasetsInside(source);
+    if (!stackDataset || datasets.some((dataset) => dataset !== stackDataset && !dataset.startsWith(stackDataset + "/"))) {
+        throw new ValidationError(`The stack folder contains datasets (${datasets.join(", ")}) but is not a dataset itself: it cannot be renamed. Convert it to a dataset first, or rename it in TrueNAS.`);
+    }
+    if (!status.stacksIsDatasetRoot || stackDataset !== `${status.dataset}/${oldName}`) {
+        throw new ValidationError(`The dataset ${stackDataset} is not named after the stack: rename it in TrueNAS`);
+    }
+    const to = `${status.dataset}/${newName}`;
+    checkSubtree(status, to);
+    return {
+        from: stackDataset,
+        to,
+        oldName,
+        newName,
+        target: path.join(status.stacksDir, newName),
+    };
+}
+
+export function explainAdminOnly(e : unknown, action : string) : Error {
+    const message = e instanceof Error ? e.message : String(e);
+    if (/not authori[sz]ed|EACCES|ENOTAUTHORIZED/i.test(message)) {
+        return new ValidationError(`TrueNAS refused to ${action}: ${message}. TrueNAS 25.04 allows renaming a dataset only to a full administrator: use the API key of an admin user, or rename it in TrueNAS.`);
+    }
+    return e instanceof Error ? e : new Error(message);
+}
+
+/**
+ * Rename the dataset of a stack (the containers must be removed) and wait until it is mounted at the new path
+ */
+export async function renameStackDataset(server : DockgeServer, plan : StackDatasetRename) : Promise<void> {
+    const { provider } = await getCreationContext(server);
+    log.info("zfs", `Renaming dataset ${plan.from} to ${plan.to}`);
+    try {
+        await provider.renameDataset(plan.from, plan.to);
+    } catch (e) {
+        throw explainAdminOnly(e, `rename ${plan.from}`);
+    }
+    await waitForMount(plan.target, plan.to);
+    try {
+        await provider.setUserProperties(plan.to, {
+            [STACK_PROPERTY]: plan.newName,
+        });
+    } catch (e) {
+        log.warn("zfs", `Cannot update ${STACK_PROPERTY} of ${plan.to}: ${e instanceof Error ? e.message : e}`);
+    }
+}
