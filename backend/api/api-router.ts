@@ -26,6 +26,8 @@ const MCP_INSTRUCTIONS = `Dockge manages Docker Compose stacks on this server.
 - Start with list_stacks / get_stack. Change files with create_stack or update_stack_files, then deploy_stack.
 - Bind mounts: data of a stack goes in its own folder with a relative path (./data:/data); get_stack_storage shows whether each path is a ZFS dataset, a folder or missing. Use absolute host paths (list_host_paths) only for data shared between stacks or outside the stacks folder.
 - get_storage_status tells whether the stacks folder is on ZFS and whether stacks and volumes can be created as datasets (canCreate). Then create_stack makes the stack a dataset, and deploy_stack / start_stack / update_stack create the missing ./xxx volumes as datasets or folders (missingVolumes; with "fail" you get the list). x-dockge.zfs in compose.yaml sets their properties, e.g. x-dockge: {zfs: {pgdata: {recordsize: 16K, owner: "999:999"}}}.
+- Files of a stack and of its volumes: list_files, read_file, write_file, make_dir, move_file, delete_file (relative paths like ./config/app.yml with stack, or absolute paths of volumes). After changing a configuration file restart the service (restart_service). Write shell scripts with LF line endings.
+- exec_in_service runs a command inside a running service; exec_in_stack_dir (only when the Console is enabled) runs it in the Dockge container from the stack folder.
 - set_dataset_properties / set_volume_permissions change existing datasets and folders of a stack.
 - Existing folders: convert_to_dataset (a ./volume, or the stack folder) runs as a job (get_job); adopt_dataset moves an external dataset into a stack as ./name. Use dryRun first. Copies kept by conversions: list_migration_backups / delete_migration_backup.
 - Snapshots (stack datasets): list_snapshots, create_snapshot, clone_stack; rollback_snapshot and delete_snapshot destroy data: always run them with dryRun first and ask the user.
@@ -129,6 +131,9 @@ function pathParams(path : string) : string[] {
 }
 
 async function runOperation(op : Operation, args : LooseObject, server : DockgeServer, key : ApiKeyInfo) : Promise<unknown> {
+    if (op.enabled && !op.enabled(server)) {
+        throw new HttpError(404, `${op.id} is not enabled on this server`);
+    }
     checkPermission(op, key);
     for (const name of op.required ?? []) {
         if (args[name] === undefined || args[name] === null || args[name] === "") {
@@ -142,7 +147,7 @@ async function runOperation(op : Operation, args : LooseObject, server : DockgeS
 export function buildOpenAPI(server : DockgeServer) : LooseObject {
     const paths : LooseObject = {};
 
-    for (const op of operations) {
+    for (const op of operations.filter((item) => !item.enabled || item.enabled(server))) {
         const openapiPath = op.path.replace(/:(\w+)/g, "{$1}");
         const inPath = pathParams(op.path);
         const hasBody = op.method === "post" || op.method === "put";
@@ -299,8 +304,9 @@ async function handleMcpMessage(message : LooseObject, server : DockgeServer, ke
         case "tools/list":
             return reply({
                 tools: operations
-                    // A read-only key only sees the read-only tools
+                    // A read-only key only sees the read-only tools; disabled tools are not listed
                     .filter((op) => op.permission === "read" || key.permission === "write")
+                    .filter((op) => !op.enabled || op.enabled(server))
                     .map((op) => ({
                         name: op.id,
                         description: op.summary + (op.description ? "\n" + op.description : ""),

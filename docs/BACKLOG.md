@@ -27,6 +27,8 @@ Cose da valutare:
 
 ## 4. Gestione dei file dello stack
 
+> **Stato**: fatte la base e le API/MCP (`backend/files.ts`: `list_files`, `read_file`, `write_file`, `make_dir`, `move_file`, `delete_file`), per la cartella dello stack, i suoi volumi `./…` e i percorsi assoluti dentro la cartella degli stack e `DOCKGE_BROWSE_ROOTS` (scrittura solo dove Dockge li ha montati in scrittura). Manca l'interfaccia (navigazione, editor, upload / download, salva e riavvia).
+
 Spesso i servizi hanno bisogno di file di configurazione. Ragionare su un gestore di file nella pagina dello stack:
 
 - **Navigazione e cartelle**: elenco di file e cartelle della cartella dello stack; creare, rinominare, spostare ed eliminare file e sottocartelle.
@@ -78,6 +80,8 @@ L'immagine usata è `ghcr.io/vidaniello/dockge:latest` e in Impostazioni → Inf
     ```
 
 ## 7. API / MCP: eseguire comandi nella cartella di uno stack
+
+> **Stato**: fatto, `exec_in_stack_dir` (`POST /stacks/:name/exec`), solo con `DOCKGE_ENABLE_CONSOLE=true`. Resta da valutare la variante senza stack (cartella degli stack).
 
 Oggi dalle API/MCP c'è solo `exec_in_service` (`backend/api/operations.ts`): esegue un comando dentro il container di un servizio, che deve essere avviato. Non si può eseguire un comando nella shell di Dockge (quella della Console), per esempio per lanciare `docker ...` o lavorare sui file di uno stack con i servizi fermi.
 

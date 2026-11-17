@@ -8,6 +8,8 @@ Questo fork aggiunge a Dockge:
 - rinomina degli stack, selettore di cartelle dell'host per i volumi, menu degli IP dell'host per le porte;
 - avvisi sulle immagini aggiornabili;
 - API REST + endpoint MCP per script e assistenti AI, con chiavi API.
+  - file di stack e volumi: `list_files`, `read_file`, `write_file`, `make_dir`, `move_file`, `delete_file`. Percorsi relativi allo stack (`./config/app.yml`, con `stack`) o assoluti dentro la cartella degli stack e `DOCKGE_BROWSE_ROOTS`; per scrivere nei volumi con percorso assoluto, montali in Dockge senza `:ro`. Un file esistente mantiene proprietario e permessi, uno nuovo prende il proprietario della sua cartella; `lineEnding: "lf"` converte gli a capo di Windows. I punti di montaggio (dataset) e la cartella dello stack non si eliminano;
+  - comandi: `exec_in_service` (dentro un servizio avviato) ed `exec_in_stack_dir` (nel container di Dockge, dalla cartella dello stack; solo con `DOCKGE_ENABLE_CONSOLE=true`).
 
 Dataset ZFS per stack e volumi: in corso, vedi [ZFS-DESIGN.md](ZFS-DESIGN.md). Dockge riconosce i dataset e, su TrueNAS con l'API configurata, crea come dataset i nuovi stack e i loro volumi.
 
