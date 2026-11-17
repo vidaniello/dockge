@@ -21,6 +21,7 @@ import { log } from "./log";
 
 export const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 export const MAX_BINARY_BYTES = 16 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const MAX_ENTRIES = 5000;
 
 export interface FileEntry {
@@ -324,6 +325,72 @@ export class FileService {
             ...this.entry(target.absolute, stat),
             created: !existing,
         };
+    }
+
+    /**
+     * Upload in chunks (socket.io messages are limited to 1 MB): the data goes to a hidden temporary file next to the
+     * target, which replaces it at the last chunk.
+     * @param input Target file
+     * @param uploadId Random id of the upload (letters, digits, -)
+     * @param offset Position of the chunk (0 for the first one: the temporary file is created)
+     * @param chunk Data
+     * @param last Last chunk: move the file into place
+     * @param overwrite Replace an existing file
+     */
+    async uploadChunk(input : unknown, uploadId : unknown, offset : number, chunk : Buffer, last : boolean, overwrite : boolean) {
+        if (typeof uploadId !== "string" || !/^[A-Za-z0-9-]{8,64}$/.test(uploadId)) {
+            throw new ValidationError("Invalid upload id");
+        }
+        const target = this.resolve(input, false);
+        if (target.isRoot) {
+            throw new ValidationError(`${target.display} is a folder`);
+        }
+        const folder = path.dirname(target.absolute);
+        const temporary = path.join(folder, `.dockge-upload-${uploadId}`);
+        if (offset === 0) {
+            if (!fs.existsSync(folder)) {
+                throw new ValidationError(`The folder of ${target.display} does not exist`);
+            }
+            if (!await isWritable(folder)) {
+                throw new ValidationError(`${this.display(folder)} is read-only for Dockge`);
+            }
+            const existing = await fsAsync.lstat(target.absolute).catch(() => null);
+            if (existing && !overwrite) {
+                throw new ValidationError(`${target.display} already exists`);
+            }
+            if (existing && !existing.isFile()) {
+                throw new ValidationError(`${target.display} is not a regular file`);
+            }
+            await fsAsync.writeFile(temporary, chunk, { mode: 0o644 });
+        } else {
+            const size = (await fsAsync.stat(temporary).catch(() => null))?.size;
+            if (size !== offset) {
+                await fsAsync.rm(temporary, { force: true });
+                throw new ValidationError("Upload out of order: start again");
+            }
+            if (size + chunk.length > MAX_UPLOAD_BYTES) {
+                await fsAsync.rm(temporary, { force: true });
+                throw new ValidationError(`The file is larger than ${MAX_UPLOAD_BYTES} bytes`);
+            }
+            await fsAsync.appendFile(temporary, chunk);
+        }
+        if (!last) {
+            return {
+                received: offset + chunk.length,
+            };
+        }
+        const existing = await fsAsync.lstat(target.absolute).catch(() => null);
+        if (existing) {
+            // Replace the content in place: owner, permissions and ACLs of the file are kept
+            await fsAsync.copyFile(temporary, target.absolute);
+            await fsAsync.rm(temporary, { force: true });
+        } else {
+            const parent = await fsAsync.stat(folder);
+            await fsAsync.rename(temporary, target.absolute);
+            await fsAsync.chown(target.absolute, parent.uid, parent.gid).catch(() => {});
+        }
+        log.info("files", `Uploaded ${target.absolute}`);
+        return this.entry(target.absolute, await fsAsync.lstat(target.absolute));
     }
 
     private async makeDirAbsolute(absolute : string) {

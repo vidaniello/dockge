@@ -74,6 +74,13 @@ L'immagine è pubblicata da GitHub Actions su `ghcr.io/vidaniello/dockge` (tag `
 
 L'immagine fissa `docker compose` alla **v5.0.2** (binario ufficiale, verificato con SHA-256, in `docker/Dockerfile`). Dalla v5.1.0 compose si ferma con `ParseAddr("…::1/64"): unexpected character, want colon` sulle reti a cui il demone Docker di TrueNAS assegna un gateway IPv6 scritto con il prefisso, cioè su qualsiasi stack. Prima di aggiornarla, provare la nuova versione su TrueNAS.
 
+## File dello stack
+
+- Il riquadro **File** nella pagina dello stack mostra i file della cartella dello stack e, con i pulsanti in alto, dei volumi montati con percorso assoluto (se sono dentro `DOCKGE_BROWSE_ROOTS` e montati in Dockge; per scriverci, senza `:ro`).
+- Clic su un file di testo per modificarlo: se ha gli a capo di Windows (CRLF) e è uno script o un file di configurazione, al salvataggio vengono convertiti in LF; c'è la casella "eseguibile". **Salva e riavvia** riavvia il servizio scelto.
+- Carica (anche trascinando i file nel riquadro), scarica, nuova cartella, rinomina, elimina. Un file esistente mantiene proprietario e permessi; uno nuovo prende il proprietario della cartella.
+- Le stesse operazioni sono nelle API (`list_files`, `read_file`, `write_file`, …).
+
 ## Cartelle della barra laterale
 
 - Il pulsante con la cartella accanto alla ricerca crea una cartella; passando sopra una cartella compaiono "nuova sottocartella", "rinomina" ed "elimina" (solo se vuota).

@@ -6,6 +6,7 @@ import { AgentSocket } from "../../common/agent-socket";
 import { LooseObject } from "../../common/util-common";
 import { listDirectory } from "../file-browser";
 import { getHostIPs } from "../host-ips";
+import { FileService } from "../files";
 import {
     addFolders, deleteFolder, deleteFolderOrder, removeFromOrder, renameFolderInOrder, renameStackInOrder,
     renameStoredFolders, setChildrenOrder, validateFolder
@@ -649,6 +650,35 @@ export class DockerSocketHandler extends AgentSocketHandler {
             } catch (e) {
                 callbackError(e, callback);
             }
+        });
+
+        // File manager of the stack page (same service as the API: backend/files.ts)
+        const fileHandler = (event : string, run : (files : FileService, ...args : unknown[]) => Promise<unknown>) => {
+            agentSocket.on(event, async (stackName : unknown, ...rest : unknown[]) => {
+                const callback = rest.pop();
+                try {
+                    checkLogin(socket);
+                    const files = new FileService(server, typeof(stackName) === "string" && stackName ? stackName : null);
+                    callbackResult({
+                        ok: true,
+                        result: await run(files, ...rest),
+                    }, callback);
+                } catch (e) {
+                    callbackError(e, callback);
+                }
+            });
+        };
+        fileHandler("fsList", (files, dirPath) => files.list(dirPath));
+        fileHandler("fsRead", (files, filePath, encoding) => files.read(filePath, encoding === "base64" ? "base64" : "utf8"));
+        fileHandler("fsWrite", (files, filePath, options) => files.write(filePath, (options ?? {}) as Parameters<FileService["write"]>[1]));
+        fileHandler("fsMkdir", (files, dirPath) => files.makeDir(dirPath));
+        fileHandler("fsMove", (files, from, to) => files.move(from, to, false));
+        fileHandler("fsDelete", (files, target, recursive) => files.remove(target, recursive === true));
+        fileHandler("fsUploadChunk", (files, filePath, uploadId, offset, base64, last, overwrite) => {
+            if (typeof(base64) !== "string") {
+                throw new ValidationError("Invalid chunk");
+            }
+            return files.uploadChunk(filePath, uploadId, Number(offset) || 0, Buffer.from(base64, "base64"), last === true, overwrite === true);
         });
 
         // Datasets / folders of the bind mounts of a stack. composeYAML (optional): analyze the draft of the editor

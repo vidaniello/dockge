@@ -27,7 +27,8 @@ Cose da valutare:
 
 ## 4. Gestione dei file dello stack
 
-> **Stato**: fatte la base e le API/MCP (`backend/files.ts`: `list_files`, `read_file`, `write_file`, `make_dir`, `move_file`, `delete_file`), per la cartella dello stack, i suoi volumi `./…` e i percorsi assoluti dentro la cartella degli stack e `DOCKGE_BROWSE_ROOTS` (scrittura solo dove Dockge li ha montati in scrittura). Manca l'interfaccia (navigazione, editor, upload / download, salva e riavvia).
+> **Stato**: fatto, tranne quanto elencato qui sotto. Base comune (`backend/files.ts`) per API/MCP (`list_files`, `read_file`, `write_file`, `make_dir`, `move_file`, `delete_file`) e per il riquadro **File** della pagina dello stack (`frontend/src/components/StackFiles.vue`): cartella dello stack, volumi `./…` e volumi con percorso assoluto dentro `DOCKGE_BROWSE_ROOTS` (scrittura solo dove sono montati in scrittura); editor CodeMirror con gestione degli a capo (avviso e conversione CRLF → LF) e bit di esecuzione, salva e riavvia un servizio, upload a blocchi (anche trascinando, fino a 1 GiB), download, nuova cartella, rinomina, eliminazione.
+> **Resta**: download di una cartella come archivio; console per singolo stack che parta nella sua cartella (punto 5).
 
 Spesso i servizi hanno bisogno di file di configurazione. Ragionare su un gestore di file nella pagina dello stack:
 
