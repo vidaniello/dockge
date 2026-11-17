@@ -6,7 +6,7 @@ import { ValidationError } from "../util-server";
 import { log } from "../log";
 import { RUNNING } from "../../common/util-common";
 import { analyzeBindMountsUnder, rewriteBindMounts } from "../bind-mounts";
-import { explainAdminOnly, getCreationContext, isDatasetMount, MANAGED_PROPERTY, STACK_PROPERTY, VOLUME_PROPERTY, waitForMount } from "./datasets";
+import { explainAdminOnly, withDatasetReleased, getCreationContext, isDatasetMount, MANAGED_PROPERTY, STACK_PROPERTY, VOLUME_PROPERTY, waitForMount } from "./datasets";
 import { normalizeVolumePath } from "./recipe";
 import { forgetStackDatasets } from "./storage";
 
@@ -111,7 +111,7 @@ export async function adoptDataset(server : DockgeServer, stackName : string, so
         await stack.stop();
     }
     try {
-        await provider.renameDataset(source, destination);
+        await withDatasetReleased(oldMount, () => provider.renameDataset(source, destination));
     } catch (e) {
         if (running) {
             await stack.startContainers().catch(() => {});
