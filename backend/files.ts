@@ -84,34 +84,42 @@ function existingAncestor(target : string) : string {
 }
 
 export class FileService {
-    private stackDir : string | null;
-    private stacksDir : string;
+    private stackDir : string;
+    private allowedRoots : string[];
 
-    constructor(private server : DockgeServer, private stackName : string | null) {
-        this.stacksDir = realpathOrNull(server.stacksDir) ?? path.resolve(server.stacksDir);
-        if (stackName !== null) {
-            if (!/^[a-z0-9_-]+$/.test(stackName)) {
-                throw new ValidationError("Invalid stack name");
-            }
-            this.stackDir = path.join(this.stacksDir, stackName);
-            if (!fs.existsSync(this.stackDir)) {
-                throw new ValidationError("Stack not found");
-            }
-        } else {
-            this.stackDir = null;
+    private constructor(private server : DockgeServer, private stackName : string, stackDir : string, volumeRoots : string[]) {
+        this.stackDir = stackDir;
+        this.allowedRoots = [ stackDir, ...volumeRoots ];
+    }
+
+    /**
+     * Files of a stack managed by Dockge: its folder and the bind mounts declared in its compose file.
+     * Stacks not managed by Dockge (other compose projects) are refused.
+     */
+    static async forStack(server : DockgeServer, stackName : unknown) : Promise<FileService> {
+        if (typeof stackName !== "string" || !/^[a-z0-9_-]+$/.test(stackName)) {
+            throw new ValidationError("A stack managed by Dockge is required (stack)");
         }
+        const { Stack } = await import("./stack");
+        const stack = await Stack.getStack(server, stackName);
+        if (!stack.isManagedByDockge) {
+            throw new ValidationError("This stack is not managed by Dockge");
+        }
+        const stackDir = fs.realpathSync(stack.path);
+        return new FileService(server, stackName, stackDir, await stackVolumeRoots(server, stack, stackDir));
+    }
+
+    /** Host folders of the bind mounts of the stack outside its folder (shortcuts of the file manager) */
+    get volumeRoots() : string[] {
+        return this.allowedRoots.slice(1);
     }
 
     private roots() : string[] {
-        const roots = [ this.stacksDir, ...getBrowseRoots().map((root) => realpathOrNull(root) ?? root) ];
-        if (this.stackDir) {
-            roots.unshift(fs.realpathSync(this.stackDir));
-        }
-        return [ ...new Set(roots) ];
+        return this.allowedRoots;
     }
 
     private display(absolute : string) : string {
-        if (this.stackDir && isInside(absolute, this.stackDir)) {
+        if (isInside(absolute, this.stackDir)) {
             const relative = path.relative(this.stackDir, absolute);
             return relative === "" ? "." : "./" + relative.split(path.sep).join("/");
         }
@@ -136,9 +144,6 @@ export class FileService {
         if (path.isAbsolute(text)) {
             absolute = path.resolve(text);
         } else {
-            if (!this.stackDir) {
-                throw new ValidationError("A relative path needs a stack");
-            }
             absolute = path.resolve(this.stackDir, text);
         }
 
@@ -164,7 +169,7 @@ export class FileService {
         const roots = this.roots();
         const root = roots.find((candidate) => isInside(real, candidate));
         if (!root) {
-            throw new ValidationError(`${text} is outside the folders Dockge can manage (the stack folder, the stacks folder and DOCKGE_BROWSE_ROOTS)`);
+            throw new ValidationError(`${text} is outside the stack ${this.stackName}: only its folder and the volumes declared in its compose file can be used`);
         }
         return {
             absolute: real,
@@ -200,7 +205,7 @@ export class FileService {
         return result;
     }
 
-    async list(input : unknown) : Promise<{ path : string, writable : boolean, entries : FileEntry[], truncated : boolean }> {
+    async list(input : unknown) : Promise<{ path : string, writable : boolean, entries : FileEntry[], truncated : boolean, volumeRoots : string[] }> {
         const target = this.resolve(input ?? ".");
         const stat = await fsAsync.stat(target.absolute).catch(() => null);
         if (!stat || !stat.isDirectory()) {
@@ -223,6 +228,8 @@ export class FileService {
             writable: await isWritable(target.absolute),
             entries,
             truncated: names.length > MAX_ENTRIES,
+            // Volumes of the stack usable besides its folder
+            volumeRoots: this.volumeRoots,
         };
     }
 
@@ -497,6 +504,60 @@ export class FileService {
             type: stat.isDirectory() ? "directory" : "file",
         };
     }
+}
+
+const SYSTEM_PATHS = /^\/(etc|dev|proc|sys|run|var\/run|var\/lib\/docker|usr|lib|lib64|bin|sbin|boot|root)(\/|$)/;
+const volumeRootsCache = new Map<string, { key : string, roots : string[] }>();
+
+/**
+ * Bind mount sources of a managed stack that the file operations may use besides its folder: resolved by docker
+ * compose (variables of .env included), visible inside Dockge, inside the stacks folder or DOCKGE_BROWSE_ROOTS, not
+ * system folders, and never a folder that contains the stacks folder (it would give access to every stack).
+ */
+async function stackVolumeRoots(server : DockgeServer, stack : { name : string, path : string, composeYAML : string, getComposeOptions : (...args : string[]) => string[] }, stackDir : string) : Promise<string[]> {
+    const { loadComposeConfig, bindSourcesFromConfig, bindSourcesFromYAML } = await import("./zfs/storage");
+    const stamp = (file : string) => {
+        try {
+            return String(fs.statSync(path.join(stack.path, file)).mtimeMs);
+        } catch (e) {
+            return "-";
+        }
+    };
+    const key = [ "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml", ".env" ].map(stamp).join("|");
+    const cached = volumeRootsCache.get(stack.name);
+    if (cached && cached.key === key) {
+        return cached.roots;
+    }
+
+    let sources : string[];
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        sources = bindSourcesFromConfig(await loadComposeConfig(stack as any)).map((item) => item.source);
+    } catch (e) {
+        sources = bindSourcesFromYAML(stack.composeYAML).map((item) => item.source).filter((source) => !source.includes("$") && !source.startsWith("~"));
+    }
+    const stacksDir = realpathOrNull(server.stacksDir) ?? path.resolve(server.stacksDir);
+    const allowed = [ stacksDir, ...getBrowseRoots().map((root) => realpathOrNull(root) ?? root) ];
+    const roots = new Set<string>();
+    for (const source of sources) {
+        const real = realpathOrNull(path.resolve(stackDir, source));
+        if (!real || isInside(real, stackDir)) {
+            continue;
+        }
+        if (SYSTEM_PATHS.test(real) || isInside(stacksDir, real)) {
+            continue;
+        }
+        if (!allowed.some((root) => isInside(real, root))) {
+            continue;
+        }
+        roots.add(real);
+    }
+    const result = [ ...roots ].sort();
+    volumeRootsCache.set(stack.name, {
+        key,
+        roots: result,
+    });
+    return result;
 }
 
 /**

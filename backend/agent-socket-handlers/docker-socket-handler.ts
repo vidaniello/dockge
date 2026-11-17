@@ -658,7 +658,7 @@ export class DockerSocketHandler extends AgentSocketHandler {
                 const callback = rest.pop();
                 try {
                     checkLogin(socket);
-                    const files = new FileService(server, typeof(stackName) === "string" && stackName ? stackName : null);
+                    const files = await FileService.forStack(server, stackName);
                     callbackResult({
                         ok: true,
                         result: await run(files, ...rest),
