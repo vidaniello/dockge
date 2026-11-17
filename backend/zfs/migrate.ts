@@ -8,7 +8,7 @@ import { ValidationError } from "../util-server";
 import { log } from "../log";
 import { RUNNING } from "../../common/util-common";
 import {
-    datasetsInside, getCreationContext, isDatasetMount, MANAGED_PROPERTY, STACK_PROPERTY, VOLUME_PROPERTY, waitForMount
+    datasetsInside, getCreationContext, isDatasetMount, MANAGED_PROPERTY, STACK_PROPERTY, VOLUME_PROPERTY, waitForMount, withDatasetReleased
 } from "./datasets";
 import { normalizeVolumePath, parseRecipes, recipeToCreateOptions, VolumeRecipe } from "./recipe";
 import { forgetStackDatasets } from "./storage";
@@ -341,7 +341,7 @@ async function runConversion(server : DockgeServer, plan : ConversionPlan, conte
         context.log(`Error: ${e instanceof Error ? e.message : e}. Restoring the folder.`);
         try {
             if (created) {
-                await provider.deleteDataset(plan.dataset, true);
+                await withDatasetReleased(plan.target, () => provider.deleteDataset(plan.dataset, true));
                 const start = Date.now();
                 while (datasetsInside(plan.target).length > 0 && Date.now() - start < 20000) {
                     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -499,7 +499,7 @@ export async function abortInterruptedConversion(server : DockgeServer, stackNam
     if (datasetsInside(target).some((name) => name !== dataset)) {
         throw new ValidationError(`${dataset} has child datasets: undo it in TrueNAS`);
     }
-    await provider.deleteDataset(dataset, true);
+    await withDatasetReleased(target, () => provider.deleteDataset(dataset, true));
     const start = Date.now();
     while (datasetsInside(target).length > 0 && Date.now() - start < 20000) {
         await new Promise((resolve) => setTimeout(resolve, 250));

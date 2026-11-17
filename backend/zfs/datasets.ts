@@ -420,7 +420,7 @@ export async function destroyStackDatasets(server : DockgeServer, stackName : st
 
     log.info("zfs", `Destroying dataset ${stackDataset} of stack ${stackName} with its children and snapshots: ${datasets.join(", ")}`);
     try {
-        await provider.deleteDataset(stackDataset, true);
+        await withDatasetReleased(target, () => provider.deleteDataset(stackDataset, true));
     } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         if (/not authori[sz]ed|EACCES|ENOTAUTHORIZED/i.test(message)) {
@@ -480,6 +480,31 @@ export async function planStackDatasetRename(server : DockgeServer, oldName : st
     };
 }
 
+/**
+ * Before TrueNAS unmounts a dataset of a stack (rename, destroy): close the terminals of Dockge working in it, then run
+ * the operation, retrying a few times while the dataset is busy (a process that is still exiting)
+ */
+export async function withDatasetReleased<T>(folder : string, operation : () => Promise<T>) : Promise<T> {
+    const { Terminal } = await import("../terminal");
+    await Terminal.closeInside(folder);
+    const delays = [ 1000, 2000, 4000 ];
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return await operation();
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            if (!/busy|EBUSY/i.test(message)) {
+                throw e;
+            }
+            if (attempt >= delays.length) {
+                throw new ValidationError(`${message}. Something still uses files in ${folder}: a shell or a file manager open in it (also on TrueNAS), an SMB/NFS share, a process of a container that is not stopped. Close it and try again.`);
+            }
+            log.info("zfs", `${folder} is busy, retrying in ${delays[attempt] / 1000} s`);
+            await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+        }
+    }
+}
+
 export function explainAdminOnly(e : unknown, action : string) : Error {
     const message = e instanceof Error ? e.message : String(e);
     if (/not authori[sz]ed|EACCES|ENOTAUTHORIZED/i.test(message)) {
@@ -492,10 +517,10 @@ export function explainAdminOnly(e : unknown, action : string) : Error {
  * Rename the dataset of a stack (the containers must be removed) and wait until it is mounted at the new path
  */
 export async function renameStackDataset(server : DockgeServer, plan : StackDatasetRename) : Promise<void> {
-    const { provider } = await getCreationContext(server);
+    const { status, provider } = await getCreationContext(server);
     log.info("zfs", `Renaming dataset ${plan.from} to ${plan.to}`);
     try {
-        await provider.renameDataset(plan.from, plan.to);
+        await withDatasetReleased(path.join(status.stacksDir, plan.oldName), () => provider.renameDataset(plan.from, plan.to));
     } catch (e) {
         throw explainAdminOnly(e, `rename ${plan.from}`);
     }

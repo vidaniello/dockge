@@ -1,3 +1,4 @@
+import path from "path";
 import { DockgeServer } from "./dockge-server";
 import * as os from "node:os";
 import * as pty from "@homebridge/node-pty-prebuilt-multiarch";
@@ -254,6 +255,41 @@ export class Terminal {
 
     public static getTerminalCount() {
         return Terminal.terminalMap.size;
+    }
+
+    /**
+     * Stop the process of the terminal at once (close() only sends Ctrl+C to the shell)
+     */
+    kill() {
+        clearInterval(this.keepAliveInterval);
+        try {
+            this._ptyProcess?.kill();
+        } catch (e) {
+            // already exited
+        }
+    }
+
+    /**
+     * Close the terminals working in a folder or below it (logs, exec in a service...): a process with its current
+     * directory inside a ZFS dataset keeps it busy, and TrueNAS cannot unmount it to rename or destroy it.
+     * @param dir Absolute folder
+     * @returns How many terminals were closed
+     */
+    public static async closeInside(dir : string) : Promise<number> {
+        const relative = (cwd : string) => path.relative(dir, path.resolve(cwd));
+        const list = [ ...Terminal.terminalMap.values() ].filter((terminal) => {
+            const rel = relative(terminal.cwd);
+            return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+        });
+        for (const terminal of list) {
+            log.info("Terminal", `Closing ${terminal.name}: it works in ${dir}`);
+            terminal.kill();
+        }
+        const start = Date.now();
+        while (list.some((terminal) => Terminal.terminalMap.get(terminal.name) === terminal) && Date.now() - start < 5000) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return list.length;
     }
 }
 
