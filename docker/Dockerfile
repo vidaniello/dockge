@@ -17,6 +17,25 @@ RUN npm ci --omit=dev
 ############################################
 FROM louislam/dockge:base AS release
 WORKDIR /app
+
+# docker compose pinned to v5.0.2. From v5.1.0 compose parses the networks returned by the daemon strictly and fails
+# when a network has an IPv6 gateway written with its prefix ("fd..::1/64"), as the Docker daemon of TrueNAS SCALE
+# returns it: ParseAddr("...::1/64"): unexpected character, want colon. v5.0.2 is the last release that reads it.
+# The official binary replaces the plugin of the base image, after checking its SHA-256.
+ARG TARGETARCH
+ARG TARGETVARIANT
+RUN set -eux; \
+    case "${TARGETARCH}${TARGETVARIANT}" in \
+        amd64) arch=x86_64; sum=2d880f723d3da7c779c54fdaea91a842fca8af55d1397f1ed8d7cbab3dd7af67 ;; \
+        arm64) arch=aarch64; sum=ac7810e0cd56a5b58576688196fafa843e07e8241fb91018a736d549ea20a3f3 ;; \
+        armv7) arch=armv7; sum=d9a0742638f15bd91598ce465cca8718490d967cfb1a28305c388f214d09976b ;; \
+        *) echo "Unsupported architecture ${TARGETARCH}${TARGETVARIANT}"; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/docker-compose "https://github.com/docker/compose/releases/download/v5.0.2/docker-compose-linux-${arch}"; \
+    echo "${sum}  /tmp/docker-compose" | sha256sum -c -; \
+    install -m 0755 /tmp/docker-compose /usr/libexec/docker/cli-plugins/docker-compose; \
+    rm /tmp/docker-compose; \
+    docker compose version
 COPY --chown=node:node --from=build_healthcheck /app/extra/healthcheck /app/extra/healthcheck
 COPY --from=build /app/node_modules /app/node_modules
 COPY --chown=node:node  . .
