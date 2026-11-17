@@ -30,6 +30,7 @@ declare module 'vue' {
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     Security: typeof import('./src/components/settings/Security.vue')['default']
+    StackFiles: typeof import('./src/components/StackFiles.vue')['default']
     StackFolder: typeof import('./src/components/StackFolder.vue')['default']
     StackList: typeof import('./src/components/StackList.vue')['default']
     StackListItem: typeof import('./src/components/StackListItem.vue')['default']

@@ -6,6 +6,7 @@ import { isValidServiceName, LooseObject, statusName } from "../../common/util-c
 import { imageUpdateChecker } from "../image-update-checker";
 import { listDirectory } from "../file-browser";
 import { getHostIPs } from "../host-ips";
+import { FileService } from "../files";
 import { ApiPermission } from "./api-keys";
 import packageJSON from "../../package.json";
 import { getStackStorage, getStorageStatus, getStorageSummary } from "../zfs/storage";
@@ -49,6 +50,8 @@ export interface Operation {
     readOnly? : boolean;
     /** MCP hint: the operation can destroy data */
     destructive? : boolean;
+    /** Available only when this returns true (otherwise not listed, and 404) */
+    enabled? : (server : DockgeServer) => boolean;
     handler : (args : LooseObject, server : DockgeServer) => Promise<unknown>;
 }
 
@@ -83,6 +86,19 @@ async function getManagedStack(server : DockgeServer, name : unknown) : Promise<
         throw new ValidationError("This stack is not managed by Dockge");
     }
     return stack;
+}
+
+/**
+ * Stack of the file operations: optional (absolute paths do not need one)
+ */
+function optionalStack(value : unknown) : string | null {
+    if (value === undefined || value === null || value === "") {
+        return null;
+    }
+    if (typeof(value) !== "string") {
+        throw new ValidationError("Invalid stack name");
+    }
+    return value;
 }
 
 function checkService(service : unknown) : string {
@@ -813,6 +829,251 @@ export const operations : Operation[] = [
 
             try {
                 const res = await childProcessAsync.spawn("docker", stack.getComposeOptions(execArgs[0], ...execArgs.slice(1)), {
+                    cwd: stack.path,
+                    encoding: "utf-8",
+                    timeout,
+                    maxBuffer: 16 * 1024 * 1024,
+                });
+                return {
+                    exitCode: res.code ?? 0,
+                    stdout: limitOutput(res.stdout?.toString() ?? ""),
+                    stderr: limitOutput(res.stderr?.toString() ?? ""),
+                };
+            } catch (e) {
+                const err = e as LooseObject;
+                return {
+                    exitCode: typeof(err.code) === "number" ? err.code : null,
+                    timedOut: err.killed === true,
+                    stdout: limitOutput(err.stdout?.toString() ?? ""),
+                    stderr: limitOutput(err.stderr?.toString() ?? err.message ?? ""),
+                };
+            }
+        },
+    },
+    {
+        id: "list_files",
+        method: "get",
+        path: "/files",
+        summary: "List a folder: of a stack (relative path, e.g. . or ./config) or an absolute path inside the stacks folder or DOCKGE_BROWSE_ROOTS (volumes with absolute paths)",
+        description: "Entries: name, path, type (file / directory / symlink), size, modified, mode, uid, gid, dataset (ZFS dataset mounted on a folder). writable tells whether Dockge can write there.",
+        tag: "Files",
+        permission: "read",
+        readOnly: true,
+        params: {
+            stack: {
+                ...stackName,
+                description: "Stack the relative paths refer to (optional with an absolute path)",
+            },
+            path: {
+                type: "string",
+                description: "Folder, default . (the stack folder)",
+                default: ".",
+            },
+        },
+        handler: async (args, server) => new FileService(server, optionalStack(args.stack)).list(args.path ?? "."),
+    },
+    {
+        id: "read_file",
+        method: "get",
+        path: "/files/content",
+        summary: "Read a file of a stack or of a volume (text up to 2 MiB; binary files with encoding=base64, up to 16 MiB)",
+        description: "The result tells the line ending (LF / CRLF / mixed) and whether the file has a UTF-8 BOM (removed from content).",
+        tag: "Files",
+        permission: "read",
+        readOnly: true,
+        params: {
+            stack: {
+                ...stackName,
+                description: "Stack the relative paths refer to (optional with an absolute path)",
+            },
+            path: {
+                type: "string",
+                description: "File, e.g. ./config/app.yml",
+            },
+            encoding: {
+                type: "string",
+                enum: [ "utf8", "base64" ],
+                default: "utf8",
+            },
+        },
+        required: [ "path" ],
+        handler: async (args, server) => new FileService(server, optionalStack(args.stack)).read(args.path, args.encoding === "base64" ? "base64" : "utf8"),
+    },
+    {
+        id: "write_file",
+        method: "put",
+        path: "/files/content",
+        summary: "Create or replace a file of a stack or of a volume. An existing file keeps owner and permissions; a new one gets the owner of its folder.",
+        description: "To apply a changed configuration, restart the service afterwards (restart_service). Shell scripts must use LF line endings: lineEnding=lf converts them.",
+        tag: "Files",
+        permission: "write",
+        params: {
+            stack: {
+                ...stackName,
+                description: "Stack the relative paths refer to (optional with an absolute path)",
+            },
+            path: {
+                type: "string",
+                description: "File, e.g. ./config/app.yml",
+            },
+            content: {
+                type: "string",
+                description: "New content (text, or base64 with encoding=base64)",
+            },
+            encoding: {
+                type: "string",
+                enum: [ "utf8", "base64" ],
+                default: "utf8",
+            },
+            lineEnding: {
+                type: "string",
+                enum: [ "keep", "lf", "crlf" ],
+                default: "keep",
+                description: "Convert the line endings of a text content",
+            },
+            executable: {
+                type: "boolean",
+                description: "Set (true) or remove (false) the execute permission",
+            },
+            createOnly: {
+                type: "boolean",
+                default: false,
+                description: "Fail if the file exists",
+            },
+            createParents: {
+                type: "boolean",
+                default: false,
+                description: "Create the missing folders",
+            },
+        },
+        required: [ "path", "content" ],
+        handler: async (args, server) => new FileService(server, optionalStack(args.stack)).write(args.path, {
+            content: args.content,
+            encoding: args.encoding,
+            lineEnding: args.lineEnding,
+            executable: args.executable === true || args.executable === "true" ? true : (args.executable === false || args.executable === "false" ? false : undefined),
+            createOnly: args.createOnly === true || args.createOnly === "true",
+            createParents: args.createParents === true || args.createParents === "true",
+        }),
+    },
+    {
+        id: "make_dir",
+        method: "post",
+        path: "/files/dir",
+        summary: "Create a folder (and the missing parents) in a stack or a volume, owned like its parent folder",
+        tag: "Files",
+        permission: "write",
+        params: {
+            stack: {
+                ...stackName,
+                description: "Stack the relative paths refer to (optional with an absolute path)",
+            },
+            path: {
+                type: "string",
+            },
+        },
+        required: [ "path" ],
+        handler: async (args, server) => new FileService(server, optionalStack(args.stack)).makeDir(args.path),
+    },
+    {
+        id: "move_file",
+        method: "post",
+        path: "/files/move",
+        summary: "Rename or move a file or a folder (within the same filesystem / dataset)",
+        tag: "Files",
+        permission: "write",
+        params: {
+            stack: {
+                ...stackName,
+                description: "Stack the relative paths refer to (optional with absolute paths)",
+            },
+            from: {
+                type: "string",
+            },
+            to: {
+                type: "string",
+            },
+            overwrite: {
+                type: "boolean",
+                default: false,
+                description: "Replace an existing file (never a folder)",
+            },
+        },
+        required: [ "from", "to" ],
+        handler: async (args, server) => new FileService(server, optionalStack(args.stack)).move(args.from, args.to, args.overwrite === true || args.overwrite === "true"),
+    },
+    {
+        id: "delete_file",
+        method: "delete",
+        path: "/files",
+        summary: "Delete a file, or a folder (recursive: true for its content). Mount points (datasets) and the stack folder are never deleted.",
+        description: "Requires confirm equal to the path.",
+        tag: "Files",
+        permission: "write",
+        destructive: true,
+        params: {
+            stack: {
+                ...stackName,
+                description: "Stack the relative paths refer to (optional with an absolute path)",
+            },
+            path: {
+                type: "string",
+            },
+            recursive: {
+                type: "boolean",
+                default: false,
+            },
+            confirm: {
+                type: "string",
+                description: "The same path again",
+            },
+        },
+        required: [ "path", "confirm" ],
+        handler: async (args, server) => {
+            if (args.confirm !== args.path) {
+                throw new ValidationError("Set confirm to the same path");
+            }
+            return new FileService(server, optionalStack(args.stack)).remove(args.path, args.recursive === true || args.recursive === "true");
+        },
+    },
+    {
+        id: "exec_in_stack_dir",
+        method: "post",
+        path: "/stacks/:name/exec",
+        summary: "Run a shell command in the Dockge container, starting from the folder of a stack (docker CLI available; the services may be stopped). Non interactive.",
+        description: "Only when the Console is enabled (DOCKGE_ENABLE_CONSOLE=true): it is root access to the host through the docker socket. Use exec_in_service to run a command inside a service.",
+        tag: "Stack actions",
+        permission: "write",
+        destructive: true,
+        enabled: (server) => server.config.enableConsole === true,
+        params: {
+            name: stackName,
+            command: {
+                type: "string",
+                description: "Command line, e.g. \"ls -la\" or \"docker compose config\"",
+            },
+            shell: {
+                type: "string",
+                enum: [ "sh", "bash" ],
+                default: "bash",
+            },
+            timeoutSeconds: {
+                type: "integer",
+                default: 60,
+                minimum: 1,
+                maximum: 3600,
+            },
+        },
+        required: [ "name", "command" ],
+        handler: async (args, server) => {
+            const stack = await getManagedStack(server, args.name);
+            if (typeof(args.command) !== "string" || !args.command.trim()) {
+                throw new ValidationError("command is required");
+            }
+            const shell = args.shell === "sh" ? "sh" : "bash";
+            const timeout = Math.min(3600, Math.max(1, Number(args.timeoutSeconds) || 60)) * 1000;
+            try {
+                const res = await childProcessAsync.spawn(shell, [ "-c", args.command ], {
                     cwd: stack.path,
                     encoding: "utf-8",
                     timeout,

@@ -174,6 +174,15 @@
                         />
                     </div>
 
+                    <!-- Files of the stack and of its volumes -->
+                    <StackFiles
+                        v-if="!isEditMode && !isAdd"
+                        :endpoint="endpoint"
+                        :stack-name="stack.name"
+                        :services="serviceNames"
+                        :volume-roots="fileVolumeRoots"
+                    />
+
                     <!-- Storage on ZFS: volumes, conversions, adoptions -->
                     <StackStorage
                         v-if="!isEditMode && !isAdd && stackStorage && storageStatus && storageStatus.zfs && storageStatus.canCreate"
@@ -485,6 +494,7 @@ import PathPicker from "../components/PathPicker.vue";
 import MissingVolumesDialog from "../components/MissingVolumesDialog.vue";
 import StackSnapshots from "../components/StackSnapshots.vue";
 import StackStorage from "../components/StackStorage.vue";
+import StackFiles from "../components/StackFiles.vue";
 import dotenv from "dotenv";
 import { ref } from "vue";
 import { useToast } from "vue-toastification";
@@ -539,6 +549,7 @@ export default {
         MissingVolumesDialog,
         StackSnapshots,
         StackStorage,
+        StackFiles,
         FontAwesomeIcon,
         CodeMirror,
         BModal,
@@ -648,6 +659,35 @@ export default {
 
         extensionsEnv() {
             return [ this.editorTheme, this.envLanguage, this.lineNumbersExtension, this.focusEffect ];
+        },
+
+        /**
+         * Host folders of the bind mounts with absolute paths outside the stack folder (shortcuts of the file manager)
+         * @returns {string[]} Paths
+         */
+        fileVolumeRoots() {
+            const services = this.envsubstJSONConfig?.services;
+            if (!services || typeof services !== "object") {
+                return [];
+            }
+            const stackDir = this.storageStatus ? `${this.storageStatus.stacksDir}/${this.stack.name}` : null;
+            const system = /^\/(etc|dev|proc|sys|run|var\/run|var\/lib\/docker|usr|lib|bin|sbin|boot)(\/|$)/;
+            const roots = new Set();
+            for (const service of Object.values(services)) {
+                for (const volume of Array.isArray(service?.volumes) ? service.volumes : []) {
+                    let source = null;
+                    if (typeof volume === "string") {
+                        const index = volume.indexOf(":");
+                        source = index > 0 ? volume.slice(0, index) : null;
+                    } else if (volume && volume.type === "bind") {
+                        source = volume.source;
+                    }
+                    if (typeof source === "string" && source.startsWith("/") && !system.test(source) && !(stackDir && (source === stackDir || source.startsWith(stackDir + "/")))) {
+                        roots.add(source.replace(/\/+$/, ""));
+                    }
+                }
+            }
+            return [ ...roots ].sort();
         },
 
         deleteReady() {
