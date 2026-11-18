@@ -275,3 +275,30 @@ Quasi tutte le funzioni sui volumi aggiunte nel fork ragionano solo sui **bind m
   - **rinomina**: verificare che `keepVolumes` copra tutti i casi (volumi anonimi, `name:` con variabili);
   - **home / riepiloghi** (punto 11): volumi non usati da nessun container, e a quale stack appartengono.
 - Collegato ai punti 4 (file dello stack), 11 (home), 14–15 (eliminazione di stack dataset) e 16 (variabili nei percorsi dei volumi).
+
+## 19. Cartelle della barra laterale: copia della cartella di ogni stack anche nel database
+
+Oggi la cartella di uno stack nella barra laterale è salvata solo nel suo compose (`x-dockge.folder`, letta da `Stack.folder` in `backend/stack.ts`). Nel database ci sono solo l'elenco delle cartelle (`stackFolders`, anche vuote) e l'ordine (`stackFolderOrder`), in `backend/stack-folders.ts`. Se si riscrive il compose per intero (incollando una versione nuova, da un altro progetto, da un assistente…) e si perde `x-dockge`, lo stack torna senza avviso al primo livello: è già successo più volte.
+
+La soluzione nel compose va bene e resta, perché la cartella viaggia con lo stack (copia, backup, git). Serve però anche una copia nel database di Dockge.
+
+- **Regole proposte**:
+
+  | Compose | Database | Cartella usata | Cosa succede |
+  |---|---|---|---|
+  | `media/arr` | `media/arr` | `media/arr` | allineati |
+  | `media/arr` | niente o diversa | `media/arr` (vince il compose) | il database viene aggiornato da solo: è una modifica voluta (o uno stack copiato/creato fuori da Dockge) |
+  | niente | `media/arr` | `media/arr` (vince il database) | badge **"Allinea"** sullo stack |
+  | niente | niente | primo livello | |
+
+- **Badge "Allinea"** (nella barra laterale e nella pagina dello stack), con due azioni:
+  - **Riscrivi nel compose**: rimette `x-dockge.folder` (con `setFolder()`, che già modifica il testo conservando commenti e formattazione);
+  - **Togli dalla cartella**: era voluto, lo stack va al primo livello e la voce nel database viene cancellata.
+  - Utile anche un'azione generale "Allinea tutti" (es. nelle Impostazioni o nel menu delle cartelle) quando sono più stack.
+- **Al salvataggio del compose**: se il testo nuovo non contiene più `x-dockge.folder` ma il database sì, avvisare subito nella finestra ("Il compose non indica più la cartella `media/arr`: ripristinarla?"), con la scelta "Ripristina" / "Togli dalla cartella" / "Decidi dopo" (rimane il badge). Meglio prevenire che accorgersene dopo nella barra laterale.
+- **Spostamenti dall'interfaccia e dalle API**: trascinamento, `move_stack_to_folder`, rinomina e spostamento di cartelle (`docker-socket-handler.ts`, `backend/api/operations.ts`) aggiornano sempre **insieme** compose e database. Spostare al primo livello cancella la voce nel database (così non nasce un "Allinea" falso).
+- **Ciclo di vita dello stack**: alla rinomina la voce passa al nome nuovo; all'eliminazione viene cancellata; per gli stack degli agent la copia sta nel database dell'agent (dove sta il compose e dove viene già chiamato `setFolder()`).
+- **Dove salvarla**: un'impostazione `stackFolderMap` (`{ "<stack>": "<cartella>" }`) accanto a `stackFolders` e `stackFolderOrder` è sufficiente; una tabella nuova solo se si vuole salvare altro per stack.
+- **API / MCP**: nella risposta degli stack aggiungere lo stato della cartella (es. `folderSource: "compose" | "database"`, `folderMismatch: true`), e un'operazione per allineare.
+- **Prima esecuzione**: al primo avvio con questa funzione, riempire il database dalle cartelle che si trovano nei compose.
+- **Da valutare**: lo stesso problema riguarda le altre voci di `x-dockge` (es. `urls`): basta un avviso al salvataggio se spariscono, senza copia nel database.
