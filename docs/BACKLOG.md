@@ -202,3 +202,45 @@ pool1/dockge_custom/stacks/zftest2-clone2
   - **toglierla**: "Elimina" su uno stack dataset elimina sempre tutto, dopo la conferma; per fermare e rimuovere i container c'è già "Down" nel menu dello stack;
   - **oppure** rinominarla in qualcosa come "Rimuovi i container (come Down) e lascia lo stack e i dati", e farla finire con un messaggio di successo, non di errore.
 - In ogni caso il messaggio d'errore lato API (`delete_stack` con `datasets: "keep"`) va riscritto: oggi sembra un fallimento.
+
+## 16. Variabili nel compose: `${VAR:?messaggio}` e altre forme non sostituite nell'interfaccia
+
+Con `image: ${IMMAGINE:?immagine obbligatoria}` il riquadro del servizio (finestra centrale "Container") mostra il testo così com'è, `${IMMAGINE:?immagine obbligatoria}`, invece del valore preso da `.env`. `docker compose` invece lo sostituisce correttamente.
+
+- **Causa** (verificata): l'interfaccia non chiede a `docker compose` il compose risolto, ma lo sostituisce da sola nel browser con `envsubstYAML()` (`common/util-common.ts`), che usa la libreria `@inventage/envsubst`. Provata con la versione 0.16 installata, riconosce solo due forme:
+
+  | Forma | `IMMAGINE` impostata | `IMMAGINE` non impostata |
+  |---|---|---|
+  | `${IMMAGINE}` | sostituita | resta il testo |
+  | `${IMMAGINE:-def}` | sostituita | `def` |
+  | `${IMMAGINE:?msg}`, `${IMMAGINE?msg}` | **resta il testo** | **resta il testo** (compose dà errore con `msg`) |
+  | `${IMMAGINE-def}`, `${IMMAGINE:+alt}`, `${IMMAGINE+alt}` | **resta il testo** | **resta il testo** |
+  | `$IMMAGINE` (senza graffe) | **resta il testo** | **resta il testo** |
+  | `$$` (dollaro letterale) | non trasformato in `$` | |
+
+  Inoltre:
+  - si usa solo il `.env` dello stack (`dotenv.parse(this.stack.composeENV)` in `Compose.vue`, `yamlCodeChange()`): il **Global .env** e i file `env_file:` non vengono considerati, mentre compose li usa;
+  - `traverseYAML()` scende solo in mappe e liste di stringhe: nelle liste di oggetti (porte e volumi in sintassi lunga, `x-dockge.urls` con oggetti…) le variabili non vengono sostituite;
+  - le sostituzioni annidate (`${A:-${B}}`) non sono gestite.
+- **Dove si vede** (tutto ciò che legge `envsubstJSONConfig`):
+  - `frontend/src/components/Container.vue`: nome e tag dell'immagine, link delle porte (`envsubstService.ports`), e quindi anche l'abbinamento con lo stato di aggiornamento dell'immagine;
+  - `frontend/src/pages/Compose.vue`: link `x-dockge.urls` e `fileVolumeRoots()` (le cartelle dei volumi con percorso assoluto proposte nel riquadro **File**: con `${DATA_DIR:?…}:/data` la cartella non compare o compare col testo della variabile);
+  - il backend invece usa `docker compose config --format json` (`backend/image-update-checker.ts`, `backend/zfs/storage.ts`) ed è corretto; controllare comunque gli altri punti del backend e delle API/MCP che leggono il compose con `yaml.parse` diretto (es. `backend/files.ts` per i volumi, `get_stack` / servizi nelle API) e verificare se sostituiscono le variabili.
+- **Proposta**:
+  - **soluzione preferita**: un evento socket / endpoint che restituisca il compose risolto da `docker compose config --format json` (stessa interpolazione, `.env`, Global .env, `env_file`, profili, `extends`), chiamato con un ritardo dopo le modifiche nell'editor e al salvataggio; in caso di errore (es. variabile obbligatoria mancante) mostrare il messaggio di compose (`required variable IMMAGINE is missing a value: immagine obbligatoria`) invece di un valore sbagliato. Funziona anche per gli stack degli agent;
+  - **in alternativa / come ripiego immediato** mentre si scrive: sostituire `@inventage/envsubst` con un'interpolazione propria che segua le regole di compose (`${V}`, `$V`, `:-`, `-`, `:?`, `?`, `:+`, `+`, `$$`, annidamento) e includa il Global .env;
+  - dove una variabile obbligatoria manca, mostrare nel riquadro del servizio un avviso chiaro e non il testo grezzo.
+- Test: unit test dell'interpolazione con tutte le forme della tabella, e una prova a schermo con `image: ${IMMAGINE:?…}`, porte e volumi in sintassi lunga con variabili.
+
+## 17. Controllo aggiornamenti delle immagini: registry con certificato autofirmato
+
+Sulle immagini del registry aziendale compare il badge "controllo fallito" con il tooltip `Cannot reach the registry: SELF_SIGNED_CERT_IN_CHAIN`, anche se `docker pull` dallo stesso host funziona.
+
+- **Perché**: il controllo (`backend/image-update-checker.ts`, `fetchRegistryDigest()`) non passa dal demone Docker: Dockge interroga direttamente il registry con `fetch()` (richiesta HEAD sul manifest) dal suo container Node.js, che si fida solo dei certificati pubblici. Il demone invece si fida del registry grazie alla configurazione dell'host (`/etc/docker/certs.d/<registry>/ca.crt`, CA di sistema dell'host o `insecure-registries` in `daemon.json`), che il container di Dockge non vede.
+- **Ragionamento sulle possibili soluzioni**, dalla più semplice:
+  1. **`NODE_EXTRA_CA_CERTS` (nessuna modifica al codice, da verificare)**: montare il certificato della CA aziendale nel container e impostare `NODE_EXTRA_CA_CERTS=/certs/ca-aziendale.crt`. Node lo legge all'avvio e `fetch()` dovrebbe accettarlo. Da provare subito e, se funziona, documentarlo in `docs/FORK.md`. È la soluzione corretta dal punto di vista della sicurezza (si verifica il certificato, non lo si ignora).
+  2. **Riusare la configurazione di Docker**: montare in sola lettura `/etc/docker/certs.d` dell'host e, per ogni registry, usare `ca.crt` se presente (con un `Agent` di undici per singolo host, senza toccare le altre connessioni). Stessa fiducia del demone, una sola configurazione da mantenere. Su TrueNAS verificare dove sta la CA usata dal demone.
+  3. **Chiedere al demone**: l'API Docker ha `GET /distribution/{name}/json`, che interroga il registry **dal demone**, con i suoi certificati, `insecure-registries` e mirror, e restituisce il digest del manifest senza scaricare l'immagine. Si potrebbe usare come ripiego quando la `fetch()` diretta fallisce per un errore TLS (o sempre per i registry non Docker Hub). Da verificare: credenziali (serve `X-Registry-Auth` letto dal `config.json` di Docker, come già fa `readRegistryAuth()`), conteggio nel limite di pull di Docker Hub (per questo per Docker Hub resterebbe la HEAD diretta), funzionamento con gli agent.
+  4. **Registry "non sicuri" per scelta**: variabile tipo `DOCKGE_REGISTRY_INSECURE=registry.azienda.local,10.0.0.5:5000` (o la lista `insecure-registries` letta da `GET /info` → `RegistryConfig.IndexConfigs[].Secure == false`) per non verificare il certificato, o usare HTTP, solo per quei registry. Utile come ultima opzione, ma va segnalato come rischio (un attaccante in rete potrebbe far credere che non ci siano aggiornamenti o che ce ne siano).
+- **Proposta**: provare subito la 1 e documentarla; poi implementare la 3 come ripiego automatico (copre anche i registry configurati come `insecure-registries` e non richiede di montare nulla), con la 2 o la 4 solo se la 3 non basta.
+- **Messaggio**: per gli errori di certificato (`SELF_SIGNED_CERT_IN_CHAIN`, `DEPTH_ZERO_SELF_SIGNED_CERT`, `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, `CERT_HAS_EXPIRED`, `ERR_TLS_CERT_ALTNAME_INVALID`; elenco già presente in `backend/zfs/truenas-client.ts`) mostrare nel tooltip un testo che spieghi la causa e come risolvere (es. "certificato del registry non riconosciuto: vedi NODE_EXTRA_CA_CERTS"), invece del solo codice. Valutare un badge diverso da "controllo fallito" (es. "non verificabile").
