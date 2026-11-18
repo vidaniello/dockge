@@ -302,3 +302,21 @@ La soluzione nel compose va bene e resta, perché la cartella viaggia con lo sta
 - **API / MCP**: nella risposta degli stack aggiungere lo stato della cartella (es. `folderSource: "compose" | "database"`, `folderMismatch: true`), e un'operazione per allineare.
 - **Prima esecuzione**: al primo avvio con questa funzione, riempire il database dalle cartelle che si trovano nei compose.
 - **Da valutare**: lo stesso problema riguarda le altre voci di `x-dockge` (es. `urls`): basta un avviso al salvataggio se spariscono, senza copia nel database.
+
+## 20. Resoconto grafico: stack, reti e volumi
+
+Una sezione (es. voce "Resoconto" o "Mappa" nel menu, o scheda della home) che mostri in modo semplice e grafico come stack, reti e volumi sono collegati tra loro. **Solo visualizzazione**: nessuna azione (avvio, eliminazione…), al massimo link alle pagine esistenti.
+
+- **Cosa mostrare**:
+  - **stack** (gestiti da Dockge e, a parte o in grigio, quelli non gestiti) con i loro servizi e lo stato (in esecuzione / fermo / unhealthy);
+  - **reti**: quelle create dallo stack (`<progetto>_default`, …), quelle `external` condivise tra più stack (le più interessanti da vedere: chi parla con chi, es. una rete `proxy` usata da Nginx Proxy Manager e da tutti i servizi esposti), `host` / `none`, reti non usate da nessuno;
+  - **volumi**: bind (percorso sull'host), volumi con nome (del progetto o `external`, condivisi tra stack), anonimi, `tmpfs`, NFS/CIFS; volumi non usati da nessun container;
+  - **porte pubblicate** sull'host, come etichetta dei servizi (utile per vedere i conflitti).
+- **Forma**, dalla più semplice:
+  1. **tabelle collegate**: per ogni rete gli stack/servizi che la usano, per ogni volume chi lo monta (e in scrittura o sola lettura); facile da fare e da leggere anche da telefono;
+  2. **schema a colonne** (stack → servizi → reti / volumi) con linee di collegamento, oppure un grafo con stack e reti come nodi; con molti stack serve un filtro (per cartella della barra laterale, per stack, "solo risorse condivise");
+  3. evidenziare al passaggio del mouse / al tocco tutto ciò che è collegato a un elemento.
+- **Da dove prendere i dati**: API Docker (`backend/docker-api.ts`), non la CLI: `GET /containers/json` (etichette `com.docker.compose.project` / `.service`, `NetworkSettings.Networks`, `Mounts`), `GET /networks`, `GET /volumes`, `GET /system/df` per le dimensioni dei volumi. Il compose risolto (`docker compose config`) per gli stack fermi, che non hanno container. Una sola chiamata socket che restituisce tutto, calcolata nel backend.
+- **Agent**: una vista per ciascun endpoint (le reti e i volumi sono locali al singolo host).
+- **API / MCP**: la stessa struttura in sola lettura (es. `get_overview`), utile a un assistente per capire l'infrastruttura prima di modificarla.
+- Collegato ai punti 11 (riepiloghi nella home: questa è la vista di dettaglio) e 18 (tipi di volume: serve la stessa funzione che elenca tutti i mount di ogni servizio).
