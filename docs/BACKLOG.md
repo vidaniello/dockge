@@ -318,5 +318,10 @@ Una sezione (es. voce "Resoconto" o "Mappa" nel menu, o scheda della home) che m
   3. evidenziare al passaggio del mouse / al tocco tutto ciò che è collegato a un elemento.
 - **Da dove prendere i dati**: API Docker (`backend/docker-api.ts`), non la CLI: `GET /containers/json` (etichette `com.docker.compose.project` / `.service`, `NetworkSettings.Networks`, `Mounts`), `GET /networks`, `GET /volumes`, `GET /system/df` per le dimensioni dei volumi. Il compose risolto (`docker compose config`) per gli stack fermi, che non hanno container. Una sola chiamata socket che restituisce tutto, calcolata nel backend.
 - **Agent**: una vista per ciascun endpoint (le reti e i volumi sono locali al singolo host).
-- **API / MCP**: la stessa struttura in sola lettura (es. `get_overview`), utile a un assistente per capire l'infrastruttura prima di modificarla.
+- **API / MCP**: la stessa struttura in sola lettura (es. `get_overview`), utile a un assistente per capire l'infrastruttura prima di modificarla. **Solo gli stack gestiti da Dockge**, come gli altri strumenti delle API (vedi il commit "API / MCP: only stacks managed by Dockge"):
+  - niente stack non gestiti né i loro servizi, reti e volumi;
+  - le reti e i volumi condivisi compaiono solo se usati da almeno uno stack gestito, e l'elenco di chi li usa contiene solo stack gestiti (al massimo un conteggio tipo `otherUsers: 2`, senza nomi);
+  - niente reti o volumi orfani, che non appartengono a nessuno stack gestito.
+
+  La sezione dell'interfaccia può invece mostrare anche gli stack non gestiti (a parte o in grigio).
 - Collegato ai punti 11 (riepiloghi nella home: questa è la vista di dettaglio) e 18 (tipi di volume: serve la stessa funzione che elenca tutti i mount di ogni servizio).
