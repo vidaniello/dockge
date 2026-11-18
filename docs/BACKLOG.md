@@ -244,3 +244,34 @@ Sulle immagini del registry aziendale compare il badge "controllo fallito" con i
   4. **Registry "non sicuri" per scelta**: variabile tipo `DOCKGE_REGISTRY_INSECURE=registry.azienda.local,10.0.0.5:5000` (o la lista `insecure-registries` letta da `GET /info` → `RegistryConfig.IndexConfigs[].Secure == false`) per non verificare il certificato, o usare HTTP, solo per quei registry. Utile come ultima opzione, ma va segnalato come rischio (un attaccante in rete potrebbe far credere che non ci siano aggiornamenti o che ce ne siano).
 - **Proposta**: provare subito la 1 e documentarla; poi implementare la 3 come ripiego automatico (copre anche i registry configurati come `insecure-registries` e non richiede di montare nulla), con la 2 o la 4 solo se la 3 non basta.
 - **Messaggio**: per gli errori di certificato (`SELF_SIGNED_CERT_IN_CHAIN`, `DEPTH_ZERO_SELF_SIGNED_CERT`, `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, `CERT_HAS_EXPIRED`, `ERR_TLS_CERT_ALTNAME_INVALID`; elenco già presente in `backend/zfs/truenas-client.ts`) mostrare nel tooltip un testo che spieghi la causa e come risolvere (es. "certificato del registry non riconosciuto: vedi NODE_EXTRA_CA_CERTS"), invece del solo codice. Valutare un badge diverso da "controllo fallito" (es. "non verificabile").
+
+## 18. Volumi: considerare anche i volumi con nome e gli altri tipi, non solo i bind mount
+
+Quasi tutte le funzioni sui volumi aggiunte nel fork ragionano solo sui **bind mount** (`./dati:/data`, `/mnt/pool/app:/data`, `type: bind`). I **volumi con nome** (`dati:/data` + sezione `volumes:` di primo livello) e gli altri tipi vengono ignorati senza dirlo: per l'utente sembra che lo stack "non abbia dati".
+
+- **Dove oggi si considerano solo i bind** (verificato):
+  - `backend/zfs/storage.ts`, `bindSourcesFromConfig()` e lettura del compose: `name:/data` viene saltato esplicitamente ("is a named volume"); quindi informazioni di archiviazione, posizione dei volumi (`stack` / `otherStack` / `external`), migrazione e adozione in dataset (`backend/zfs/migrate.ts`, `adopt.ts`) non vedono i volumi con nome;
+  - `backend/files.ts` (radici del riquadro **File** e API `list_files` / `read_file` / …) e `fileVolumeRoots()` in `frontend/src/pages/Compose.vue`: solo cartella dello stack e bind con percorso assoluto;
+  - `backend/bind-mounts.ts` (percorsi da aggiornare quando si rinomina uno stack): solo bind; per i volumi con nome c'è già la gestione del prefisso `<progetto>_` in `stack.ts` (`keepVolumes`), da ricontrollare insieme;
+  - eliminazione dello stack (`stack.ts`, `docker compose down` senza `-v`): i volumi con nome del progetto restano su disco, orfani, e non viene detto all'utente.
+- **Tipi da considerare**, ognuno con un comportamento diverso:
+
+  | Tipo | Dove stanno i dati | Cosa può fare Dockge |
+  |---|---|---|
+  | volume con nome, driver `local` | `/var/lib/docker/volumes/<progetto>_<nome>/_data` sull'host (non visibile dal container di Dockge) | mostrarlo, con dimensione e percorso (`GET /volumes/{name}`, `Mountpoint`, `UsageData` da `GET /system/df`); file solo se la cartella è montata o tramite un container temporaneo |
+  | volume `local` con `driver_opts: { type: none, o: bind, device: /mnt/... }` | in realtà un bind sulla cartella `device` | trattarlo come un bind con quel percorso (file, ZFS, dataset) |
+  | volume `local` NFS / CIFS (`driver_opts.type: nfs` / `cifs`) | su un altro server | solo informazione (server, percorso); niente ZFS né snapshot locali |
+  | volume `external: true` / con `name:` esplicito | condiviso, creato fuori dallo stack | mostrarlo come esterno; non va mai eliminato insieme allo stack |
+  | volume anonimo (`- /data` senza sorgente) | come un volume con nome casuale | segnalarlo (si perde con `down -v` o ricreando il container) |
+  | `tmpfs` | in memoria | solo informazione: i dati non sopravvivono al riavvio |
+  | `type: image`, driver di terze parti, `npipe`, `cluster` | dipende | mostrare il tipo e "non gestito" |
+
+- **Cosa ragionare / proporre**:
+  - un'unica funzione nel backend che, dal compose risolto (`docker compose config --format json`, già usato) più l'API Docker (`GET /volumes`, filtro `label=com.docker.compose.project=<progetto>`), restituisca tutti i mount di ogni servizio con tipo, sorgente reale, percorso sull'host, sola lettura, e se è dello stack o esterno; le varie funzioni (File, ZFS, rinomina, eliminazione, home) la riusano invece di rifare il parsing;
+  - **pagina dello stack**: elencare anche i volumi con nome nel riquadro del servizio / nel riquadro File, almeno come informazione (nome reale, driver, dimensione, percorso sull'host);
+  - **file nei volumi con nome**: valutare se montare in Dockge `/var/lib/docker/volumes` in sola lettura (o in scrittura) come radice consentita, oppure leggere/scrivere tramite un container temporaneo (`docker run --rm -v <volume>:/v alpine ...`, come già fa `backend/zfs/hidden.ts` per i dati nascosti); attenzione a sicurezza e permessi;
+  - **ZFS**: un volume con nome sta sul dataset di Docker (es. `ix-apps/docker/volumes` su TrueNAS), non su quello dello stack: snapshot e rollback dello stack non lo includono. Dirlo chiaramente nelle informazioni di archiviazione e valutare una "migrazione" da volume con nome a bind dentro il dataset dello stack (copia dei dati, modifica del compose);
+  - **eliminazione dello stack**: elencare i volumi con nome del progetto e chiedere se eliminarli (`down -v`, solo quelli non `external`), di default conservarli; stesso discorso nell'API `delete_stack`;
+  - **rinomina**: verificare che `keepVolumes` copra tutti i casi (volumi anonimi, `name:` con variabili);
+  - **home / riepiloghi** (punto 11): volumi non usati da nessun container, e a quale stack appartengono.
+- Collegato ai punti 4 (file dello stack), 11 (home), 14–15 (eliminazione di stack dataset) e 16 (variabili nei percorsi dei volumi).
