@@ -202,3 +202,161 @@ pool1/dockge_custom/stacks/zftest2-clone2
   - **toglierla**: "Elimina" su uno stack dataset elimina sempre tutto, dopo la conferma; per fermare e rimuovere i container c'è già "Down" nel menu dello stack;
   - **oppure** rinominarla in qualcosa come "Rimuovi i container (come Down) e lascia lo stack e i dati", e farla finire con un messaggio di successo, non di errore.
 - In ogni caso il messaggio d'errore lato API (`delete_stack` con `datasets: "keep"`) va riscritto: oggi sembra un fallimento.
+
+## 16. Variabili nel compose: `${VAR:?messaggio}` e altre forme non sostituite nell'interfaccia
+
+Con `image: ${IMMAGINE:?immagine obbligatoria}` il riquadro del servizio (finestra centrale "Container") mostra il testo così com'è, `${IMMAGINE:?immagine obbligatoria}`, invece del valore preso da `.env`. `docker compose` invece lo sostituisce correttamente.
+
+- **Causa** (verificata): l'interfaccia non chiede a `docker compose` il compose risolto, ma lo sostituisce da sola nel browser con `envsubstYAML()` (`common/util-common.ts`), che usa la libreria `@inventage/envsubst`. Provata con la versione 0.16 installata, riconosce solo due forme:
+
+  | Forma | `IMMAGINE` impostata | `IMMAGINE` non impostata |
+  |---|---|---|
+  | `${IMMAGINE}` | sostituita | resta il testo |
+  | `${IMMAGINE:-def}` | sostituita | `def` |
+  | `${IMMAGINE:?msg}`, `${IMMAGINE?msg}` | **resta il testo** | **resta il testo** (compose dà errore con `msg`) |
+  | `${IMMAGINE-def}`, `${IMMAGINE:+alt}`, `${IMMAGINE+alt}` | **resta il testo** | **resta il testo** |
+  | `$IMMAGINE` (senza graffe) | **resta il testo** | **resta il testo** |
+  | `$$` (dollaro letterale) | non trasformato in `$` | |
+
+  Inoltre:
+  - si usa solo il `.env` dello stack (`dotenv.parse(this.stack.composeENV)` in `Compose.vue`, `yamlCodeChange()`): il **Global .env** e i file `env_file:` non vengono considerati, mentre compose li usa;
+  - `traverseYAML()` scende solo in mappe e liste di stringhe: nelle liste di oggetti (porte e volumi in sintassi lunga, `x-dockge.urls` con oggetti…) le variabili non vengono sostituite;
+  - le sostituzioni annidate (`${A:-${B}}`) non sono gestite.
+- **Dove si vede** (tutto ciò che legge `envsubstJSONConfig`):
+  - `frontend/src/components/Container.vue`: nome e tag dell'immagine, link delle porte (`envsubstService.ports`), e quindi anche l'abbinamento con lo stato di aggiornamento dell'immagine;
+  - `frontend/src/pages/Compose.vue`: link `x-dockge.urls` e `fileVolumeRoots()` (le cartelle dei volumi con percorso assoluto proposte nel riquadro **File**: con `${DATA_DIR:?…}:/data` la cartella non compare o compare col testo della variabile);
+  - il backend invece usa `docker compose config --format json` (`backend/image-update-checker.ts`, `backend/zfs/storage.ts`) ed è corretto; controllare comunque gli altri punti del backend e delle API/MCP che leggono il compose con `yaml.parse` diretto (es. `backend/files.ts` per i volumi, `get_stack` / servizi nelle API) e verificare se sostituiscono le variabili.
+- **Proposta**:
+  - **soluzione preferita**: un evento socket / endpoint che restituisca il compose risolto da `docker compose config --format json` (stessa interpolazione, `.env`, Global .env, `env_file`, profili, `extends`), chiamato con un ritardo dopo le modifiche nell'editor e al salvataggio; in caso di errore (es. variabile obbligatoria mancante) mostrare il messaggio di compose (`required variable IMMAGINE is missing a value: immagine obbligatoria`) invece di un valore sbagliato. Funziona anche per gli stack degli agent;
+  - **in alternativa / come ripiego immediato** mentre si scrive: sostituire `@inventage/envsubst` con un'interpolazione propria che segua le regole di compose (`${V}`, `$V`, `:-`, `-`, `:?`, `?`, `:+`, `+`, `$$`, annidamento) e includa il Global .env;
+  - dove una variabile obbligatoria manca, mostrare nel riquadro del servizio un avviso chiaro e non il testo grezzo.
+- Test: unit test dell'interpolazione con tutte le forme della tabella, e una prova a schermo con `image: ${IMMAGINE:?…}`, porte e volumi in sintassi lunga con variabili.
+
+## 17. Controllo aggiornamenti delle immagini: registry privati e certificati autofirmati
+
+> **Stato**: fatta la lettura completa di `config.json` (`backend/registry-auth.ts`, con test): chiavi confrontate per nome host come la CLI, `auth`, `username` + `password`, `identitytoken`, `registrytoken`, `credHelpers` / `credsStore`, messaggi "nessuna credenziale" / "credenziali rifiutate". Questo risolve le immagini private su GHCR.
+> **Resta**: certificati autofirmati, tramite il controllo fatto dal demone (`/distribution`).
+
+Il controllo fallisce per le immagini che non stanno su un registry pubblico con certificato riconosciuto, mentre `docker pull` e l'aggiornamento dello stack funzionano:
+
+- registry aziendale con certificato autofirmato: badge "controllo fallito", `Cannot reach the registry: SELF_SIGNED_CERT_IN_CHAIN`;
+- immagini private su GHCR (es. `ghcr.io/vidaniello/gestione-dipendenti-backend:latest`): `Registry authentication failed (HTTP 401)`.
+
+In generale fallisce ogni volta che serve un certificato non pubblico o un'autenticazione.
+
+- **Perché** (verificato in `backend/image-update-checker.ts`): il controllo non passa dal demone Docker. Dockge interroga direttamente il registry con `fetch()` di Node (richiesta HEAD sul manifest, `getRemoteDigest()`):
+  - **certificati**: Node usa i propri, non vede quelli che il demone usa sull'host (`/etc/docker/certs.d/<registry>/ca.crt`, CA di sistema dell'host, `insecure-registries` di `daemon.json`);
+  - **autenticazione**: `getRegistryAuth()` legge già `config.json` (`$DOCKER_CONFIG` o `/root/.docker`), ma solo `auths[<registry>].auth`. Non gestisce `username` / `password`, `identitytoken`, `credsStore` / `credHelpers`. Il 401 su GHCR arriva dalla richiesta del token (`getBearerToken()`), quindi le credenziali non vengono trovate o non vengono accettate. Il pull funziona perché lo fa la CLI `docker`, che legge tutte le forme di `config.json` e passa le credenziali al demone.
+  - Per vedere la forma del proprio `config.json` senza mostrare i valori:
+
+    ```bash
+    docker exec dockge node -e 'const c=require("/root/.docker/config.json"); console.log(JSON.stringify({credsStore:c.credsStore, credHelpers:c.credHelpers, auths:Object.fromEntries(Object.entries(c.auths||{}).map(([k,v])=>[k,Object.keys(v)]))},null,2))'
+    ```
+
+- **Proposta: far fare il controllo al demone, tramite il docker.sock**, senza passaggi in più nel `compose.yaml` di Dockge:
+  - l'API Docker `GET /distribution/{immagine}/json` interroga il registry **dal demone** e restituisce il digest del manifest (e le piattaforme) senza scaricare l'immagine. Il demone usa i suoi certificati, gli `insecure-registries` e i mirror: gli stessi di `docker pull`;
+  - le credenziali vanno passate nell'header `X-Registry-Auth` (JSON in base64 con `username` / `password` o `identitytoken` e `serveraddress`), lette da `config.json` **come fa la CLI**: `auths` con `auth` (base64 di `utente:password`) o con i campi separati, `identitytoken`, e dove servono `credHelpers` / `credsStore` (`docker-credential-<helper> get`);
+  - con gli agent funziona allo stesso modo: ogni agent chiede al proprio demone;
+  - **Docker Hub**: il demone legge anche il manifest e Docker Hub può contarlo nel limite di pull. Per Docker Hub tenere la richiesta HEAD diretta di oggi (funziona e non consuma il limite); usare il demone per tutti gli altri registry, oppure come ripiego automatico quando la richiesta diretta fallisce per certificato o autenticazione;
+  - da verificare: che il digest restituito (`Descriptor.digest`) sia confrontabile con `RepoDigests` dell'immagine locale come oggi (indice multi-architettura o manifest singolo), il comportamento con registry HTTP non sicuri, i tempi con molti stack (limitare le richieste in parallelo).
+- **Da sistemare in ogni caso: lettura completa di `config.json`**, come fa la CLI `docker`, perché le credenziali servono sia alla richiesta diretta sia al demone.
+  - **Cosa dice l'errore 401 su GHCR** (provato): richiesta del token senza credenziali per un'immagine privata → `401 authentication required`; con credenziali sbagliate → `403 denied`. Quindi con il 401 Dockge **non sta inviando nessuna credenziale**: non trova la voce di `ghcr.io`, anche se nel `config.json` è salvata con `auth`.
+  - **Nome della voce**: oggi `getRegistryAuth()` cerca solo alcune chiavi esatte (`ghcr.io`, `https://ghcr.io`, `https://ghcr.io/v1/`, `https://ghcr.io/v2/`). La CLI invece normalizza ogni chiave al nome host (toglie `http://` / `https://` e tutto quello che segue la prima `/`, senza distinguere maiuscole e minuscole), quindi `ghcr.io/vidaniello`, `https://ghcr.io/` ecc. funzionano con `docker pull` ma non con Dockge. **Causa confermata** sul server: le chiavi sono `https://ghcr.io/` e `https://gitlab-docker-registry.prod.dev/` (con la `/` finale), che nessuna delle forme cercate da Dockge comprende. Lo stesso vale per il registry aziendale: risolto il certificato, fallirebbe comunque per l'autenticazione. Fare lo stesso confronto; per Docker Hub accettare `https://index.docker.io/v1/`, `index.docker.io`, `docker.io`, `registry-1.docker.io`.
+  - **File**: `$DOCKER_CONFIG/config.json` se la variabile è impostata, altrimenti `~/.docker/config.json`; rileggerlo a ogni controllo (un `docker login` fatto dopo l'avvio deve valere subito).
+  - **Forme delle credenziali**, tutte da gestire:
+
+    | Forma in `config.json` | Uso |
+    |---|---|
+    | `auths.<host>.auth` (base64 di `utente:password`) | Basic al registry o alla richiesta del token |
+    | `auths.<host>.username` + `password` (senza `auth`) | come sopra, codificati da Dockge |
+    | `auths.<host>.identitytoken` | token OAuth: richiesta del token con `grant_type=refresh_token` (POST al `realm`), come la CLI |
+    | `auths.<host>.registrytoken` | già un token Bearer, usato direttamente |
+    | `credHelpers.<host>: "<helper>"` | `docker-credential-<helper> get` con il nome host in input; risposta `{ Username, Secret }` (`Username` = `<token>` significa che `Secret` è un identitytoken) |
+    | `credsStore: "<helper>"` | come sopra, per tutti i registry senza voce in `credHelpers`; se il programma non c'è nel container, ripiegare su `auths` |
+
+    Con il demone (`/distribution`) le stesse credenziali vanno nell'header `X-Registry-Auth` (`username` / `password` o `identitytoken`, `serveraddress`).
+  - **Messaggi diversi** per "nessuna credenziale trovata per `ghcr.io` in `<percorso>/config.json`" (401 senza credenziali inviate), "credenziali rifiutate dal registry" (401 / 403 con credenziali), "programma `docker-credential-xxx` non trovato". Nei log, mai i valori delle credenziali.
+  - **Test** unitari per ogni riga della tabella e per la normalizzazione dei nomi.
+- **Alternative scartate o di riserva**: `NODE_EXTRA_CA_CERTS` con la CA montata nel container, oppure montare `/etc/docker/certs.d` dell'host. Funzionerebbero solo per i certificati e richiedono configurazione in più; restano utili solo se `/distribution` non bastasse.
+- **Messaggi**: per gli errori di certificato (`SELF_SIGNED_CERT_IN_CHAIN`, `DEPTH_ZERO_SELF_SIGNED_CERT`, `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, `CERT_HAS_EXPIRED`, `ERR_TLS_CERT_ALTNAME_INVALID`; elenco già in `backend/zfs/truenas-client.ts`) e di autenticazione (401 / 403: "nessuna credenziale per ghcr.io in config.json" oppure "credenziali rifiutate") mostrare nel tooltip la causa e come risolvere, non il solo codice. Valutare un badge diverso da "controllo fallito" (es. "non verificabile").
+
+## 18. Volumi: considerare anche i volumi con nome e gli altri tipi, non solo i bind mount
+
+Quasi tutte le funzioni sui volumi aggiunte nel fork ragionano solo sui **bind mount** (`./dati:/data`, `/mnt/pool/app:/data`, `type: bind`). I **volumi con nome** (`dati:/data` + sezione `volumes:` di primo livello) e gli altri tipi vengono ignorati senza dirlo: per l'utente sembra che lo stack "non abbia dati".
+
+- **Dove oggi si considerano solo i bind** (verificato):
+  - `backend/zfs/storage.ts`, `bindSourcesFromConfig()` e lettura del compose: `name:/data` viene saltato esplicitamente ("is a named volume"); quindi informazioni di archiviazione, posizione dei volumi (`stack` / `otherStack` / `external`), migrazione e adozione in dataset (`backend/zfs/migrate.ts`, `adopt.ts`) non vedono i volumi con nome;
+  - `backend/files.ts` (radici del riquadro **File** e API `list_files` / `read_file` / …) e `fileVolumeRoots()` in `frontend/src/pages/Compose.vue`: solo cartella dello stack e bind con percorso assoluto;
+  - `backend/bind-mounts.ts` (percorsi da aggiornare quando si rinomina uno stack): solo bind; per i volumi con nome c'è già la gestione del prefisso `<progetto>_` in `stack.ts` (`keepVolumes`), da ricontrollare insieme;
+  - eliminazione dello stack (`stack.ts`, `docker compose down` senza `-v`): i volumi con nome del progetto restano su disco, orfani, e non viene detto all'utente.
+- **Tipi da considerare**, ognuno con un comportamento diverso:
+
+  | Tipo | Dove stanno i dati | Cosa può fare Dockge |
+  |---|---|---|
+  | volume con nome, driver `local` | `/var/lib/docker/volumes/<progetto>_<nome>/_data` sull'host (non visibile dal container di Dockge) | mostrarlo, con dimensione e percorso (`GET /volumes/{name}`, `Mountpoint`, `UsageData` da `GET /system/df`); file solo se la cartella è montata o tramite un container temporaneo |
+  | volume `local` con `driver_opts: { type: none, o: bind, device: /mnt/... }` | in realtà un bind sulla cartella `device` | trattarlo come un bind con quel percorso (file, ZFS, dataset) |
+  | volume `local` NFS / CIFS (`driver_opts.type: nfs` / `cifs`) | su un altro server | solo informazione (server, percorso); niente ZFS né snapshot locali |
+  | volume `external: true` / con `name:` esplicito | condiviso, creato fuori dallo stack | mostrarlo come esterno; non va mai eliminato insieme allo stack |
+  | volume anonimo (`- /data` senza sorgente) | come un volume con nome casuale | segnalarlo (si perde con `down -v` o ricreando il container) |
+  | `tmpfs` | in memoria | solo informazione: i dati non sopravvivono al riavvio |
+  | `type: image`, driver di terze parti, `npipe`, `cluster` | dipende | mostrare il tipo e "non gestito" |
+
+- **Cosa ragionare / proporre**:
+  - un'unica funzione nel backend che, dal compose risolto (`docker compose config --format json`, già usato) più l'API Docker (`GET /volumes`, filtro `label=com.docker.compose.project=<progetto>`), restituisca tutti i mount di ogni servizio con tipo, sorgente reale, percorso sull'host, sola lettura, e se è dello stack o esterno; le varie funzioni (File, ZFS, rinomina, eliminazione, home) la riusano invece di rifare il parsing;
+  - **pagina dello stack**: elencare anche i volumi con nome nel riquadro del servizio / nel riquadro File, almeno come informazione (nome reale, driver, dimensione, percorso sull'host);
+  - **file nei volumi con nome**: valutare se montare in Dockge `/var/lib/docker/volumes` in sola lettura (o in scrittura) come radice consentita, oppure leggere/scrivere tramite un container temporaneo (`docker run --rm -v <volume>:/v alpine ...`, come già fa `backend/zfs/hidden.ts` per i dati nascosti); attenzione a sicurezza e permessi;
+  - **ZFS**: un volume con nome sta sul dataset di Docker (es. `ix-apps/docker/volumes` su TrueNAS), non su quello dello stack: snapshot e rollback dello stack non lo includono. Dirlo chiaramente nelle informazioni di archiviazione e valutare una "migrazione" da volume con nome a bind dentro il dataset dello stack (copia dei dati, modifica del compose);
+  - **eliminazione dello stack**: elencare i volumi con nome del progetto e chiedere se eliminarli (`down -v`, solo quelli non `external`), di default conservarli; stesso discorso nell'API `delete_stack`;
+  - **rinomina**: verificare che `keepVolumes` copra tutti i casi (volumi anonimi, `name:` con variabili);
+  - **home / riepiloghi** (punto 11): volumi non usati da nessun container, e a quale stack appartengono.
+- Collegato ai punti 4 (file dello stack), 11 (home), 14–15 (eliminazione di stack dataset) e 16 (variabili nei percorsi dei volumi).
+
+## 19. Cartelle della barra laterale: copia della cartella di ogni stack anche nel database
+
+Oggi la cartella di uno stack nella barra laterale è salvata solo nel suo compose (`x-dockge.folder`, letta da `Stack.folder` in `backend/stack.ts`). Nel database ci sono solo l'elenco delle cartelle (`stackFolders`, anche vuote) e l'ordine (`stackFolderOrder`), in `backend/stack-folders.ts`. Se si riscrive il compose per intero (incollando una versione nuova, da un altro progetto, da un assistente…) e si perde `x-dockge`, lo stack torna senza avviso al primo livello: è già successo più volte.
+
+La soluzione nel compose va bene e resta, perché la cartella viaggia con lo stack (copia, backup, git). Serve però anche una copia nel database di Dockge.
+
+- **Regole proposte**:
+
+  | Compose | Database | Cartella usata | Cosa succede |
+  |---|---|---|---|
+  | `media/arr` | `media/arr` | `media/arr` | allineati |
+  | `media/arr` | niente o diversa | `media/arr` (vince il compose) | il database viene aggiornato da solo: è una modifica voluta (o uno stack copiato/creato fuori da Dockge) |
+  | niente | `media/arr` | `media/arr` (vince il database) | badge **"Allinea"** sullo stack |
+  | niente | niente | primo livello | |
+
+- **Badge "Allinea"** (nella barra laterale e nella pagina dello stack), con due azioni:
+  - **Riscrivi nel compose**: rimette `x-dockge.folder` (con `setFolder()`, che già modifica il testo conservando commenti e formattazione);
+  - **Togli dalla cartella**: era voluto, lo stack va al primo livello e la voce nel database viene cancellata.
+  - Utile anche un'azione generale "Allinea tutti" (es. nelle Impostazioni o nel menu delle cartelle) quando sono più stack.
+- **Al salvataggio del compose**: se il testo nuovo non contiene più `x-dockge.folder` ma il database sì, avvisare subito nella finestra ("Il compose non indica più la cartella `media/arr`: ripristinarla?"), con la scelta "Ripristina" / "Togli dalla cartella" / "Decidi dopo" (rimane il badge). Meglio prevenire che accorgersene dopo nella barra laterale.
+- **Spostamenti dall'interfaccia e dalle API**: trascinamento, `move_stack_to_folder`, rinomina e spostamento di cartelle (`docker-socket-handler.ts`, `backend/api/operations.ts`) aggiornano sempre **insieme** compose e database. Spostare al primo livello cancella la voce nel database (così non nasce un "Allinea" falso).
+- **Ciclo di vita dello stack**: alla rinomina la voce passa al nome nuovo; all'eliminazione viene cancellata; per gli stack degli agent la copia sta nel database dell'agent (dove sta il compose e dove viene già chiamato `setFolder()`).
+- **Dove salvarla**: un'impostazione `stackFolderMap` (`{ "<stack>": "<cartella>" }`) accanto a `stackFolders` e `stackFolderOrder` è sufficiente; una tabella nuova solo se si vuole salvare altro per stack.
+- **API / MCP**: nella risposta degli stack aggiungere lo stato della cartella (es. `folderSource: "compose" | "database"`, `folderMismatch: true`), e un'operazione per allineare.
+- **Prima esecuzione**: al primo avvio con questa funzione, riempire il database dalle cartelle che si trovano nei compose.
+- **Da valutare**: lo stesso problema riguarda le altre voci di `x-dockge` (es. `urls`): basta un avviso al salvataggio se spariscono, senza copia nel database.
+
+## 20. Resoconto grafico: stack, reti e volumi
+
+Una sezione (es. voce "Resoconto" o "Mappa" nel menu, o scheda della home) che mostri in modo semplice e grafico come stack, reti e volumi sono collegati tra loro. **Solo visualizzazione**: nessuna azione (avvio, eliminazione…), al massimo link alle pagine esistenti.
+
+- **Cosa mostrare**:
+  - **stack** (gestiti da Dockge e, a parte o in grigio, quelli non gestiti) con i loro servizi e lo stato (in esecuzione / fermo / unhealthy);
+  - **reti**: quelle create dallo stack (`<progetto>_default`, …), quelle `external` condivise tra più stack (le più interessanti da vedere: chi parla con chi, es. una rete `proxy` usata da Nginx Proxy Manager e da tutti i servizi esposti), `host` / `none`, reti non usate da nessuno;
+  - **volumi**: bind (percorso sull'host), volumi con nome (del progetto o `external`, condivisi tra stack), anonimi, `tmpfs`, NFS/CIFS; volumi non usati da nessun container;
+  - **porte pubblicate** sull'host, come etichetta dei servizi (utile per vedere i conflitti).
+- **Forma**, dalla più semplice:
+  1. **tabelle collegate**: per ogni rete gli stack/servizi che la usano, per ogni volume chi lo monta (e in scrittura o sola lettura); facile da fare e da leggere anche da telefono;
+  2. **schema a colonne** (stack → servizi → reti / volumi) con linee di collegamento, oppure un grafo con stack e reti come nodi; con molti stack serve un filtro (per cartella della barra laterale, per stack, "solo risorse condivise");
+  3. evidenziare al passaggio del mouse / al tocco tutto ciò che è collegato a un elemento.
+- **Da dove prendere i dati**: API Docker (`backend/docker-api.ts`), non la CLI: `GET /containers/json` (etichette `com.docker.compose.project` / `.service`, `NetworkSettings.Networks`, `Mounts`), `GET /networks`, `GET /volumes`, `GET /system/df` per le dimensioni dei volumi. Il compose risolto (`docker compose config`) per gli stack fermi, che non hanno container. Una sola chiamata socket che restituisce tutto, calcolata nel backend.
+- **Agent**: una vista per ciascun endpoint (le reti e i volumi sono locali al singolo host).
+- **API / MCP**: la stessa struttura in sola lettura (es. `get_overview`), utile a un assistente per capire l'infrastruttura prima di modificarla. **Solo gli stack gestiti da Dockge**, come gli altri strumenti delle API (vedi il commit "API / MCP: only stacks managed by Dockge"):
+  - niente stack non gestiti né i loro servizi, reti e volumi;
+  - le reti e i volumi condivisi compaiono solo se usati da almeno uno stack gestito, e l'elenco di chi li usa contiene solo stack gestiti (al massimo un conteggio tipo `otherUsers: 2`, senza nomi);
+  - niente reti o volumi orfani, che non appartengono a nessuno stack gestito.
+
+  La sezione dell'interfaccia può invece mostrare anche gli stack non gestiti (a parte o in grigio).
+- Collegato ai punti 11 (riepiloghi nella home: questa è la vista di dettaglio) e 18 (tipi di volume: serve la stessa funzione che elenca tutti i mount di ogni servizio).
