@@ -232,18 +232,33 @@ Con `image: ${IMMAGINE:?immagine obbligatoria}` il riquadro del servizio (finest
   - dove una variabile obbligatoria manca, mostrare nel riquadro del servizio un avviso chiaro e non il testo grezzo.
 - Test: unit test dell'interpolazione con tutte le forme della tabella, e una prova a schermo con `image: ${IMMAGINE:?…}`, porte e volumi in sintassi lunga con variabili.
 
-## 17. Controllo aggiornamenti delle immagini: registry con certificato autofirmato
+## 17. Controllo aggiornamenti delle immagini: registry privati e certificati autofirmati
 
-Sulle immagini del registry aziendale compare il badge "controllo fallito" con il tooltip `Cannot reach the registry: SELF_SIGNED_CERT_IN_CHAIN`, anche se `docker pull` dallo stesso host funziona.
+Il controllo fallisce per le immagini che non stanno su un registry pubblico con certificato riconosciuto, mentre `docker pull` e l'aggiornamento dello stack funzionano:
 
-- **Perché**: il controllo (`backend/image-update-checker.ts`, `fetchRegistryDigest()`) non passa dal demone Docker: Dockge interroga direttamente il registry con `fetch()` (richiesta HEAD sul manifest) dal suo container Node.js, che si fida solo dei certificati pubblici. Il demone invece si fida del registry grazie alla configurazione dell'host (`/etc/docker/certs.d/<registry>/ca.crt`, CA di sistema dell'host o `insecure-registries` in `daemon.json`), che il container di Dockge non vede.
-- **Ragionamento sulle possibili soluzioni**, dalla più semplice:
-  1. **`NODE_EXTRA_CA_CERTS` (nessuna modifica al codice, da verificare)**: montare il certificato della CA aziendale nel container e impostare `NODE_EXTRA_CA_CERTS=/certs/ca-aziendale.crt`. Node lo legge all'avvio e `fetch()` dovrebbe accettarlo. Da provare subito e, se funziona, documentarlo in `docs/FORK.md`. È la soluzione corretta dal punto di vista della sicurezza (si verifica il certificato, non lo si ignora).
-  2. **Riusare la configurazione di Docker**: montare in sola lettura `/etc/docker/certs.d` dell'host e, per ogni registry, usare `ca.crt` se presente (con un `Agent` di undici per singolo host, senza toccare le altre connessioni). Stessa fiducia del demone, una sola configurazione da mantenere. Su TrueNAS verificare dove sta la CA usata dal demone.
-  3. **Chiedere al demone**: l'API Docker ha `GET /distribution/{name}/json`, che interroga il registry **dal demone**, con i suoi certificati, `insecure-registries` e mirror, e restituisce il digest del manifest senza scaricare l'immagine. Si potrebbe usare come ripiego quando la `fetch()` diretta fallisce per un errore TLS (o sempre per i registry non Docker Hub). Da verificare: credenziali (serve `X-Registry-Auth` letto dal `config.json` di Docker, come già fa `readRegistryAuth()`), conteggio nel limite di pull di Docker Hub (per questo per Docker Hub resterebbe la HEAD diretta), funzionamento con gli agent.
-  4. **Registry "non sicuri" per scelta**: variabile tipo `DOCKGE_REGISTRY_INSECURE=registry.azienda.local,10.0.0.5:5000` (o la lista `insecure-registries` letta da `GET /info` → `RegistryConfig.IndexConfigs[].Secure == false`) per non verificare il certificato, o usare HTTP, solo per quei registry. Utile come ultima opzione, ma va segnalato come rischio (un attaccante in rete potrebbe far credere che non ci siano aggiornamenti o che ce ne siano).
-- **Proposta**: provare subito la 1 e documentarla; poi implementare la 3 come ripiego automatico (copre anche i registry configurati come `insecure-registries` e non richiede di montare nulla), con la 2 o la 4 solo se la 3 non basta.
-- **Messaggio**: per gli errori di certificato (`SELF_SIGNED_CERT_IN_CHAIN`, `DEPTH_ZERO_SELF_SIGNED_CERT`, `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, `CERT_HAS_EXPIRED`, `ERR_TLS_CERT_ALTNAME_INVALID`; elenco già presente in `backend/zfs/truenas-client.ts`) mostrare nel tooltip un testo che spieghi la causa e come risolvere (es. "certificato del registry non riconosciuto: vedi NODE_EXTRA_CA_CERTS"), invece del solo codice. Valutare un badge diverso da "controllo fallito" (es. "non verificabile").
+- registry aziendale con certificato autofirmato: badge "controllo fallito", `Cannot reach the registry: SELF_SIGNED_CERT_IN_CHAIN`;
+- immagini private su GHCR (es. `ghcr.io/vidaniello/gestione-dipendenti-backend:latest`): `Registry authentication failed (HTTP 401)`.
+
+In generale fallisce ogni volta che serve un certificato non pubblico o un'autenticazione.
+
+- **Perché** (verificato in `backend/image-update-checker.ts`): il controllo non passa dal demone Docker. Dockge interroga direttamente il registry con `fetch()` di Node (richiesta HEAD sul manifest, `getRemoteDigest()`):
+  - **certificati**: Node usa i propri, non vede quelli che il demone usa sull'host (`/etc/docker/certs.d/<registry>/ca.crt`, CA di sistema dell'host, `insecure-registries` di `daemon.json`);
+  - **autenticazione**: `getRegistryAuth()` legge già `config.json` (`$DOCKER_CONFIG` o `/root/.docker`), ma solo `auths[<registry>].auth`. Non gestisce `username` / `password`, `identitytoken`, `credsStore` / `credHelpers`. Il 401 su GHCR arriva dalla richiesta del token (`getBearerToken()`), quindi le credenziali non vengono trovate o non vengono accettate. Il pull funziona perché lo fa la CLI `docker`, che legge tutte le forme di `config.json` e passa le credenziali al demone.
+  - Per vedere la forma del proprio `config.json` senza mostrare i valori:
+
+    ```bash
+    docker exec dockge node -e 'const c=require("/root/.docker/config.json"); console.log(JSON.stringify({credsStore:c.credsStore, credHelpers:c.credHelpers, auths:Object.fromEntries(Object.entries(c.auths||{}).map(([k,v])=>[k,Object.keys(v)]))},null,2))'
+    ```
+
+- **Proposta: far fare il controllo al demone, tramite il docker.sock**, senza passaggi in più nel `compose.yaml` di Dockge:
+  - l'API Docker `GET /distribution/{immagine}/json` interroga il registry **dal demone** e restituisce il digest del manifest (e le piattaforme) senza scaricare l'immagine. Il demone usa i suoi certificati, gli `insecure-registries` e i mirror: gli stessi di `docker pull`;
+  - le credenziali vanno passate nell'header `X-Registry-Auth` (JSON in base64 con `username` / `password` o `identitytoken` e `serveraddress`), lette da `config.json` **come fa la CLI**: `auths` con `auth` (base64 di `utente:password`) o con i campi separati, `identitytoken`, e dove servono `credHelpers` / `credsStore` (`docker-credential-<helper> get`);
+  - con gli agent funziona allo stesso modo: ogni agent chiede al proprio demone;
+  - **Docker Hub**: il demone legge anche il manifest e Docker Hub può contarlo nel limite di pull. Per Docker Hub tenere la richiesta HEAD diretta di oggi (funziona e non consuma il limite); usare il demone per tutti gli altri registry, oppure come ripiego automatico quando la richiesta diretta fallisce per certificato o autenticazione;
+  - da verificare: che il digest restituito (`Descriptor.digest`) sia confrontabile con `RepoDigests` dell'immagine locale come oggi (indice multi-architettura o manifest singolo), il comportamento con registry HTTP non sicuri, i tempi con molti stack (limitare le richieste in parallelo).
+- **Da sistemare in ogni caso**: la lettura di `config.json` (tutte le forme), perché le credenziali servono sia alla richiesta diretta sia al demone.
+- **Alternative scartate o di riserva**: `NODE_EXTRA_CA_CERTS` con la CA montata nel container, oppure montare `/etc/docker/certs.d` dell'host. Funzionerebbero solo per i certificati e richiedono configurazione in più; restano utili solo se `/distribution` non bastasse.
+- **Messaggi**: per gli errori di certificato (`SELF_SIGNED_CERT_IN_CHAIN`, `DEPTH_ZERO_SELF_SIGNED_CERT`, `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, `CERT_HAS_EXPIRED`, `ERR_TLS_CERT_ALTNAME_INVALID`; elenco già in `backend/zfs/truenas-client.ts`) e di autenticazione (401 / 403: "nessuna credenziale per ghcr.io in config.json" oppure "credenziali rifiutate") mostrare nel tooltip la causa e come risolvere, non il solo codice. Valutare un badge diverso da "controllo fallito" (es. "non verificabile").
 
 ## 18. Volumi: considerare anche i volumi con nome e gli altri tipi, non solo i bind mount
 
