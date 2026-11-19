@@ -256,7 +256,24 @@ In generale fallisce ogni volta che serve un certificato non pubblico o un'auten
   - con gli agent funziona allo stesso modo: ogni agent chiede al proprio demone;
   - **Docker Hub**: il demone legge anche il manifest e Docker Hub può contarlo nel limite di pull. Per Docker Hub tenere la richiesta HEAD diretta di oggi (funziona e non consuma il limite); usare il demone per tutti gli altri registry, oppure come ripiego automatico quando la richiesta diretta fallisce per certificato o autenticazione;
   - da verificare: che il digest restituito (`Descriptor.digest`) sia confrontabile con `RepoDigests` dell'immagine locale come oggi (indice multi-architettura o manifest singolo), il comportamento con registry HTTP non sicuri, i tempi con molti stack (limitare le richieste in parallelo).
-- **Da sistemare in ogni caso**: la lettura di `config.json` (tutte le forme), perché le credenziali servono sia alla richiesta diretta sia al demone.
+- **Da sistemare in ogni caso: lettura completa di `config.json`**, come fa la CLI `docker`, perché le credenziali servono sia alla richiesta diretta sia al demone.
+  - **Cosa dice l'errore 401 su GHCR** (provato): richiesta del token senza credenziali per un'immagine privata → `401 authentication required`; con credenziali sbagliate → `403 denied`. Quindi con il 401 Dockge **non sta inviando nessuna credenziale**: non trova la voce di `ghcr.io`, anche se nel `config.json` è salvata con `auth`.
+  - **Nome della voce**: oggi `getRegistryAuth()` cerca solo alcune chiavi esatte (`ghcr.io`, `https://ghcr.io`, `https://ghcr.io/v1/`, `https://ghcr.io/v2/`). La CLI invece normalizza ogni chiave al nome host (toglie `http://` / `https://` e tutto quello che segue la prima `/`, senza distinguere maiuscole e minuscole), quindi `ghcr.io/vidaniello`, `https://ghcr.io/` ecc. funzionano con `docker pull` ma non con Dockge. Fare lo stesso confronto; per Docker Hub accettare `https://index.docker.io/v1/`, `index.docker.io`, `docker.io`, `registry-1.docker.io`.
+  - **File**: `$DOCKER_CONFIG/config.json` se la variabile è impostata, altrimenti `~/.docker/config.json`; rileggerlo a ogni controllo (un `docker login` fatto dopo l'avvio deve valere subito).
+  - **Forme delle credenziali**, tutte da gestire:
+
+    | Forma in `config.json` | Uso |
+    |---|---|
+    | `auths.<host>.auth` (base64 di `utente:password`) | Basic al registry o alla richiesta del token |
+    | `auths.<host>.username` + `password` (senza `auth`) | come sopra, codificati da Dockge |
+    | `auths.<host>.identitytoken` | token OAuth: richiesta del token con `grant_type=refresh_token` (POST al `realm`), come la CLI |
+    | `auths.<host>.registrytoken` | già un token Bearer, usato direttamente |
+    | `credHelpers.<host>: "<helper>"` | `docker-credential-<helper> get` con il nome host in input; risposta `{ Username, Secret }` (`Username` = `<token>` significa che `Secret` è un identitytoken) |
+    | `credsStore: "<helper>"` | come sopra, per tutti i registry senza voce in `credHelpers`; se il programma non c'è nel container, ripiegare su `auths` |
+
+    Con il demone (`/distribution`) le stesse credenziali vanno nell'header `X-Registry-Auth` (`username` / `password` o `identitytoken`, `serveraddress`).
+  - **Messaggi diversi** per "nessuna credenziale trovata per `ghcr.io` in `<percorso>/config.json`" (401 senza credenziali inviate), "credenziali rifiutate dal registry" (401 / 403 con credenziali), "programma `docker-credential-xxx` non trovato". Nei log, mai i valori delle credenziali.
+  - **Test** unitari per ogni riga della tabella e per la normalizzazione dei nomi.
 - **Alternative scartate o di riserva**: `NODE_EXTRA_CA_CERTS` con la CA montata nel container, oppure montare `/etc/docker/certs.d` dell'host. Funzionerebbero solo per i certificati e richiedono configurazione in più; restano utili solo se `/distribution` non bastasse.
 - **Messaggi**: per gli errori di certificato (`SELF_SIGNED_CERT_IN_CHAIN`, `DEPTH_ZERO_SELF_SIGNED_CERT`, `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, `CERT_HAS_EXPIRED`, `ERR_TLS_CERT_ALTNAME_INVALID`; elenco già in `backend/zfs/truenas-client.ts`) e di autenticazione (401 / 403: "nessuna credenziale per ghcr.io in config.json" oppure "credenziali rifiutate") mostrare nel tooltip la causa e come risolvere, non il solo codice. Valutare un badge diverso da "controllo fallito" (es. "non verificabile").
 
