@@ -234,6 +234,9 @@ Con `image: ${IMMAGINE:?immagine obbligatoria}` il riquadro del servizio (finest
 
 ## 17. Controllo aggiornamenti delle immagini: registry privati e certificati autofirmati
 
+> **Stato**: fatta la lettura completa di `config.json` (`backend/registry-auth.ts`, con test): chiavi confrontate per nome host come la CLI, `auth`, `username` + `password`, `identitytoken`, `registrytoken`, `credHelpers` / `credsStore`, messaggi "nessuna credenziale" / "credenziali rifiutate". Questo risolve le immagini private su GHCR.
+> **Resta**: certificati autofirmati, tramite il controllo fatto dal demone (`/distribution`).
+
 Il controllo fallisce per le immagini che non stanno su un registry pubblico con certificato riconosciuto, mentre `docker pull` e l'aggiornamento dello stack funzionano:
 
 - registry aziendale con certificato autofirmato: badge "controllo fallito", `Cannot reach the registry: SELF_SIGNED_CERT_IN_CHAIN`;

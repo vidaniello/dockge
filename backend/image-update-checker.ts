@@ -1,6 +1,3 @@
-import fs from "fs";
-import os from "os";
-import path from "path";
 import childProcessAsync from "promisify-child-process";
 import { log } from "./log";
 import { Settings } from "./settings";
@@ -8,6 +5,7 @@ import { Stack } from "./stack";
 import { DockgeServer } from "./dockge-server";
 import { LooseObject } from "../common/util-common";
 import { apiName, dockerApiGet } from "./docker-api";
+import { getRegistryCredentials, RegistryAuthResult } from "./registry-auth";
 
 /**
  * Checks whether newer versions of the images used by the stacks are available, without pulling anything.
@@ -110,28 +108,6 @@ function registryHost(registry : string) : string {
     return registry === "docker.io" ? "registry-1.docker.io" : registry;
 }
 
-/**
- * Basic credentials of a registry from the docker config file (docker login), if any
- */
-function getRegistryAuth(registry : string) : string | undefined {
-    try {
-        const dir = process.env.DOCKER_CONFIG || path.join(os.homedir(), ".docker");
-        const config = JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf-8"));
-        const auths = config.auths ?? {};
-        const candidates = registry === "docker.io"
-            ? [ "https://index.docker.io/v1/", "index.docker.io", "docker.io", "registry-1.docker.io" ]
-            : [ registry, "https://" + registry, "https://" + registry + "/v1/", "https://" + registry + "/v2/" ];
-        for (const key of candidates) {
-            if (auths[key]?.auth) {
-                return auths[key].auth;
-            }
-        }
-    } catch (e) {
-        // No docker config
-    }
-    return undefined;
-}
-
 async function fetchWithTimeout(url : string, init : RequestInit) : Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -146,15 +122,53 @@ async function fetchWithTimeout(url : string, init : RequestInit) : Promise<Resp
 }
 
 /**
+ * Error from the registry, with a message that tells whether credentials were sent
+ */
+function authError(status : number, ref : ImageRef, auth : RegistryAuthResult) : Error {
+    const host = registryHost(ref.registry) === "registry-1.docker.io" ? "docker.io" : ref.registry;
+    if (!auth.credentials) {
+        const hint = auth.warnings.length > 0 ? ` (${auth.warnings.join("; ")})` : "";
+        return new Error(`Registry authentication required (HTTP ${status}): no credentials for ${host} in ${auth.configPath}${hint}, run "docker login ${host}"`);
+    }
+    return new Error(`Registry credentials rejected (HTTP ${status}), from ${auth.source}`);
+}
+
+/**
  * Get a bearer token from the "WWW-Authenticate: Bearer realm=...,service=...,scope=..." challenge
  */
-async function getBearerToken(challenge : string, basicAuth? : string) : Promise<string | undefined> {
+async function getBearerToken(challenge : string, ref : ImageRef, auth : RegistryAuthResult) : Promise<string | undefined> {
     const params : LooseObject = {};
     for (const match of challenge.matchAll(/(\w+)="([^"]*)"/g)) {
         params[match[1]] = match[2];
     }
     if (!params.realm) {
         return undefined;
+    }
+    const credentials = auth.credentials;
+
+    // OAuth refresh token (identitytoken): POST to the realm, like the docker CLI
+    if (credentials?.identityToken) {
+        const body = new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: credentials.identityToken,
+            client_id: "dockge",
+        });
+        if (params.service) {
+            body.set("service", params.service);
+        }
+        if (params.scope) {
+            body.set("scope", params.scope);
+        }
+        const res = await fetchWithTimeout(params.realm, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body,
+        });
+        if (!res.ok) {
+            throw authError(res.status, ref, auth);
+        }
+        const json = await res.json();
+        return json.access_token ?? json.token;
     }
 
     const url = new URL(params.realm);
@@ -166,13 +180,14 @@ async function getBearerToken(challenge : string, basicAuth? : string) : Promise
     }
 
     const headers : Record<string, string> = {};
-    if (basicAuth) {
-        headers.Authorization = "Basic " + basicAuth;
+    if (credentials?.username) {
+        headers.Authorization = "Basic " + Buffer.from(`${credentials.username}:${credentials.password ?? ""}`).toString("base64");
+        url.searchParams.set("account", credentials.username);
     }
 
     const res = await fetchWithTimeout(url.toString(), { headers });
     if (!res.ok) {
-        throw new Error(`Registry authentication failed (HTTP ${res.status})`);
+        throw authError(res.status, ref, auth);
     }
     const body = await res.json();
     return body.token ?? body.access_token;
@@ -183,25 +198,29 @@ async function getBearerToken(challenge : string, basicAuth? : string) : Promise
  */
 export async function getRemoteDigest(ref : ImageRef) : Promise<string> {
     const url = `https://${registryHost(ref.registry)}/v2/${ref.repository}/manifests/${ref.tag}`;
-    const basicAuth = getRegistryAuth(ref.registry);
+    const auth = await getRegistryCredentials(ref.registry);
+    const credentials = auth.credentials;
     const headers : Record<string, string> = {
         Accept: MANIFEST_ACCEPT,
     };
+    if (credentials?.registryToken) {
+        headers.Authorization = "Bearer " + credentials.registryToken;
+    }
 
     let res = await fetchWithTimeout(url, {
         method: "HEAD",
         headers,
     });
 
-    if (res.status === 401) {
+    if (res.status === 401 && !credentials?.registryToken) {
         const challenge = res.headers.get("www-authenticate") ?? "";
         if (/^bearer/i.test(challenge)) {
-            const token = await getBearerToken(challenge, basicAuth);
+            const token = await getBearerToken(challenge, ref, auth);
             if (token) {
                 headers.Authorization = "Bearer " + token;
             }
-        } else if (basicAuth) {
-            headers.Authorization = "Basic " + basicAuth;
+        } else if (credentials?.username) {
+            headers.Authorization = "Basic " + Buffer.from(`${credentials.username}:${credentials.password ?? ""}`).toString("base64");
         }
         res = await fetchWithTimeout(url, {
             method: "HEAD",
@@ -209,6 +228,9 @@ export async function getRemoteDigest(ref : ImageRef) : Promise<string> {
         });
     }
 
+    if (res.status === 401 || res.status === 403) {
+        throw authError(res.status, ref, auth);
+    }
     if (res.status === 404) {
         throw new Error("Tag not found on the registry");
     }

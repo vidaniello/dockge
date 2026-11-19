@@ -91,6 +91,16 @@ L'immagine fissa `docker compose` alla **v5.0.2** (binario ufficiale, verificato
 - Le cartelle possono restare vuote: l'elenco è salvato nel database di Dockge, la cartella di ogni stack nel suo compose (`x-dockge.folder`). Sul disco gli stack non si spostano.
 - Le stesse operazioni sono disponibili nelle API (`list_folders`, `create_folder`, `move_folder`, `delete_folder`, `set_stack_folder`).
 
+## Controllo aggiornamenti delle immagini
+
+- Dockge confronta il digest dell'immagine in uso con quello pubblicato dal registry per lo stesso tag, senza scaricare nulla.
+- **Registry privati** (GHCR, GitLab, registry aziendali…): le credenziali sono quelle di `docker login`, lette da `$DOCKER_CONFIG/config.json` o da `/root/.docker/config.json` del container di Dockge (montare la cartella, es. `/root/.docker:/root/.docker`). Il file viene riletto a ogni controllo. Come la CLI `docker`:
+  - le voci di `auths` valgono per nome host, comunque siano scritte (`ghcr.io`, `https://ghcr.io/`, `https://ghcr.io/v2/`…);
+  - sono accettati `auth`, `username` + `password`, `identitytoken` e `registrytoken`;
+  - con `credHelpers` / `credsStore` viene chiamato `docker-credential-<nome>`; se non è presente nel container si usano le voci di `auths`.
+- Nel tooltip del badge "controllo fallito" il messaggio distingue "nessuna credenziale per il registry" da "credenziali rifiutate".
+- I registry con certificato autofirmato non sono ancora supportati (vedi il punto 17 di [BACKLOG.md](BACKLOG.md)).
+
 ## Variabili d'ambiente aggiunte
 
 | Variabile | Default | A cosa serve |
