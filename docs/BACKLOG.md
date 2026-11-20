@@ -38,7 +38,7 @@ Spesso i servizi hanno bisogno di file di configurazione. Ragionare su un gestor
 - **A capo di Windows (CRLF)**: gli script `.sh` con `\r\n` non partono (`/bin/sh^M: bad interpreter`).
   - L'editor lavora già internamente con `\n`, quindi il testo incollato da Windows viene normalizzato; controllare che al salvataggio venga scritto con `\n`.
   - Per i file caricati: rilevare CRLF (e il BOM UTF-8) e proporre la conversione, almeno per `.sh`, `.env`, `.yaml`, `.conf`; mostrare nell'editor il tipo di a capo del file (LF / CRLF) e permettere di cambiarlo.
-  - Bit di esecuzione per gli script (`chmod +x`) e proprietario dei file (`PUID` / `PGID`, come per compose.yaml).
+  - Bit di esecuzione per gli script (`chmod +x`) e proprietario dei file (`PUID` / `PGID`, come per compose.yaml): il bit di esecuzione è fatto, proprietario e permessi sono nel punto 23.
 - **Sicurezza**: restare dentro la cartella dello stack (percorsi risolti, niente `..` né link simbolici che escono), limite di dimensione, i file binari solo in download.
 - **File fuori dallo stack**: chi usa percorsi assoluti dell'host nei bind mount (es. `/mnt/pool/...`) ha i file di configurazione lì, non nella cartella dello stack. Valutare di permettere anche le cartelle di `DOCKGE_BROWSE_ROOTS`; oggi sono montate in sola lettura e andrebbero montate in scrittura.
 - **API / MCP**: esporre lettura e scrittura dei file (es. `list_files`, `read_file`, `write_file`), così un assistente AI può correggere una configurazione e riavviare il servizio.
@@ -388,3 +388,23 @@ Fuori dalla modalità modifica l'editor del compose.yaml mostra tutto il file: c
 - Lo schermo intero già presente (`ExpandableBox`) resta com'è, come alternativa per leggere file lunghi.
 - Il `.env` nascosto (sfocato finché non si preme "Mostra valori") deve continuare a funzionare anche da compresso.
 - Dove: `frontend/src/pages/Compose.vue` (classi `.editor-box` / `.env-box`), eventualmente un'opzione in `frontend/src/components/ExpandableBox.vue` (es. `collapsible` + `collapsed-height`) da riusare altrove (es. il Global .env nelle impostazioni).
+
+## 23. Gestione file: cambiare proprietario e permessi di file e cartelle, anche in modo ricorsivo
+
+Nel riquadro **File** della pagina dello stack (`frontend/src/components/StackFiles.vue`) si vedono permessi e proprietario di ogni voce (es. `0644 1000:1000`), ma non si possono cambiare: c'è solo la casella "eseguibile" nell'editor. Spesso un servizio non parte perché i file di configurazione o i dati hanno il proprietario sbagliato (es. caricati da Dockge come root, mentre il container gira come `PUID:PGID` o `568:568` su TrueNAS).
+
+- **Cosa esiste già**:
+  - `backend/files.ts`: un file o una cartella nuova prende il proprietario della cartella in cui viene creata; un file esistente mantiene proprietario e permessi;
+  - API `set_volume_permissions` (`PUT /stacks/:name/storage/permissions`): proprietario e permessi di un volume `./xxx` o della cartella dello stack, `recursive` per il proprietario del contenuto (senza entrare nei dataset figli), ma `mode` solo sulla cartella stessa e non su file o sottocartelle qualsiasi.
+- **Proposta**:
+  - **finestra "Permessi"** su file e cartelle (menu della riga, e per più voci selezionate):
+    - utente / gruppo come uid:gid numerici, con proposte: `PUID:PGID` del `.env` dello stack, `568:568` (utente `apps` di TrueNAS), il proprietario della cartella superiore, `0:0`;
+    - permessi in ottale (es. `0644`) e con le caselle lettura / scrittura / esecuzione per proprietario, gruppo e altri, sincronizzate tra loro;
+  - **opzione ricorsiva** per le cartelle:
+    - permessi diversi per file e cartelle (es. 644 / 755), oppure la regola `X` di `chmod` (esecuzione solo alle cartelle e ai file già eseguibili);
+    - si può cambiare solo il proprietario, solo i permessi, o entrambi;
+    - non segue i link simbolici (cambia il link stesso, `lchown`) e non entra nei dataset figli né in altri punti di montaggio, come `set_volume_permissions`;
+  - **anteprima e conferma**: quanti file e cartelle verranno toccati (con un limite oltre il quale si chiede una conferma esplicita), avviso se il percorso è un volume montato in sola lettura in Dockge o una cartella di sistema; al termine, quanti elementi sono stati cambiati e gli eventuali errori;
+  - **API / MCP**: uno strumento `set_file_permissions` (`stack`, `path`, `owner`, `mode`, `recursive`, `fileMode` / `dirMode`, `dryRun`), con gli stessi limiti di percorso delle altre operazioni sui file (cartella dello stack e volumi dichiarati nel suo compose); oppure estendere `set_volume_permissions` a qualsiasi percorso consentito.
+- **Sicurezza**: solo nelle radici già consentite dalla gestione file (`FileService.forStack`), chiave API con permesso di scrittura; operazione lunga eseguita come job (come le conversioni ZFS) se gli elementi sono molti.
+- Sostituisce la riga "proprietario dei file (`PUID` / `PGID`)" del punto 4.
