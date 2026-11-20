@@ -18,7 +18,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # The fork runs only in the Linux Docker image: Windows and macOS are not needed
+        os: [ubuntu-latest]
         node: [22] # Can be changed
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -48,6 +49,9 @@ jobs:
 
       - name: Check Typescript
         run: npm run check-ts
+
+      - name: Test
+        run: npm test
 
       - name: Build
         run: npm run build:frontend
