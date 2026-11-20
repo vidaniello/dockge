@@ -48,9 +48,10 @@ function getTarget() : Target {
 /**
  * GET a Docker Engine API path, e.g. "/networks"
  * @param path API path (without version prefix: the daemon uses its own version)
+ * @param options Extra request headers (e.g. X-Registry-Auth) and timeout (default 15 s)
  * @returns Parsed JSON
  */
-export function dockerApiGet<T = LooseObject>(path : string) : Promise<T> {
+export function dockerApiGet<T = LooseObject>(path : string, options : { headers? : Record<string, string>, timeoutMs? : number } = {}) : Promise<T> {
     return new Promise((resolve, reject) => {
         let target : Target;
         try {
@@ -66,8 +67,9 @@ export function dockerApiGet<T = LooseObject>(path : string) : Promise<T> {
             method: "GET",
             headers: {
                 Accept: "application/json",
+                ...options.headers,
             },
-            timeout: 15 * 1000,
+            timeout: options.timeoutMs ?? 15 * 1000,
         }, (response) => {
             const chunks : Buffer[] = [];
             response.on("data", (chunk : Buffer) => chunks.push(chunk));

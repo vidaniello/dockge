@@ -99,7 +99,7 @@ L'immagine fissa `docker compose` alla **v5.0.2** (binario ufficiale, verificato
   - sono accettati `auth`, `username` + `password`, `identitytoken` e `registrytoken`;
   - con `credHelpers` / `credsStore` viene chiamato `docker-credential-<nome>`; se non è presente nel container si usano le voci di `auths`.
 - Nel tooltip del badge "controllo fallito" il messaggio distingue "nessuna credenziale per il registry" da "credenziali rifiutate".
-- I registry con certificato autofirmato non sono ancora supportati (vedi il punto 17 di [BACKLOG.md](BACKLOG.md)).
+- **Registry non raggiungibili direttamente da Dockge** (certificato autofirmato o di una CA aziendale, registry HTTP in `insecure-registries`, nomi o proxy noti solo all'host): se la richiesta diretta fallisce senza risposta (TLS, DNS, connessione, timeout), Dockge chiede il digest al demone Docker (`GET /distribution/{immagine}/json`, tramite il docker.sock, con le stesse credenziali). Il demone usa la configurazione dell'host (`/etc/docker/certs.d`, `insecure-registries`, mirror, proxy) come per `docker pull`, e non scarica l'immagine. Non serve nessuna configurazione in più. Per Docker Hub e gli altri registry raggiungibili resta la richiesta diretta, che Docker Hub non conta nel limite di pull.
 
 ## Variabili d'ambiente aggiunte
 
