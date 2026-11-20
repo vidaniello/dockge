@@ -362,3 +362,29 @@ Una sezione (es. voce "Resoconto" o "Mappa" nel menu, o scheda della home) che m
 
   La sezione dell'interfaccia può invece mostrare anche gli stack non gestiti (a parte o in grigio).
 - Collegato ai punti 11 (riepiloghi nella home: questa è la vista di dettaglio) e 18 (tipi di volume: serve la stessa funzione che elenca tutti i mount di ogni servizio).
+
+## 21. Pagina dello stack: colonne "Container" e compose.yaml ridimensionabili
+
+La barra laterale degli stack si allarga e si stringe trascinandone il bordo. Le due colonne centrali della pagina dello stack (servizi / "Container" a sinistra, compose.yaml e `.env` a destra) hanno invece sempre la stessa larghezza, metà e metà (`col-lg-6` in `frontend/src/pages/Compose.vue`).
+
+- **Proposta**: un divisore verticale tra le due colonne, da trascinare, come `sidebar-resizer` in `frontend/src/pages/Dashboard.vue`:
+  - larghezza salvata in percentuale (non in pixel), così si adatta quando cambia la finestra o la larghezza della barra laterale;
+  - minimo per ciascuna colonna (es. 25%), doppio clic sul divisore per tornare a metà e metà;
+  - salvata nel browser (`localStorage`, come la barra laterale), uguale per tutti gli stack;
+  - sotto la larghezza `lg` (telefono, finestre strette) le colonne restano una sotto l'altra e il divisore non compare.
+- Valutare di riusare lo stesso codice per la barra laterale e per il divisore (un piccolo componente o composable "splitter").
+- Controllare anche i riquadri a tutto schermo (`ExpandableBox`): non devono risentire della larghezza scelta.
+
+## 22. compose.yaml e `.env` lunghi: riquadro compresso con pulsante "Espandi"
+
+Fuori dalla modalità modifica l'editor del compose.yaml mostra tutto il file: con un compose lunghissimo la pagina diventa molto lunga e bisogna scorrere parecchio per arrivare in fondo (al `.env` e al resto). Lo stesso vale per il `.env`.
+
+- **Proposta**, solo in visualizzazione:
+  - riquadro compresso a un'altezza massima (es. ~25 righe per il compose, ~10 per il `.env`), con una sfumatura in fondo che faccia capire che il testo continua;
+  - un pulsante **"Espandi"** (nella barra del riquadro, accanto a quello per lo schermo intero, e/o in fondo al testo) che mostra tutto il file; ripremendolo (**"Comprimi"**) torna all'altezza ridotta;
+  - il pulsante compare solo se il file è più lungo dell'altezza ridotta;
+  - la scelta può essere ricordata nel browser (per tipo di file, non per stack), oppure ripartire sempre compressa: da decidere.
+- **In modalità modifica** compose.yaml e `.env` sono sempre estesi per intero, senza il pulsante (si vede e si modifica tutto il file). Uscendo dalla modifica si torna allo stato scelto.
+- Lo schermo intero già presente (`ExpandableBox`) resta com'è, come alternativa per leggere file lunghi.
+- Il `.env` nascosto (sfocato finché non si preme "Mostra valori") deve continuare a funzionare anche da compresso.
+- Dove: `frontend/src/pages/Compose.vue` (classi `.editor-box` / `.env-box`), eventualmente un'opzione in `frontend/src/components/ExpandableBox.vue` (es. `collapsible` + `collapsed-height`) da riusare altrove (es. il Global .env nelle impostazioni).
