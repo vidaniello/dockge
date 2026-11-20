@@ -234,8 +234,10 @@ Con `image: ${IMMAGINE:?immagine obbligatoria}` il riquadro del servizio (finest
 
 ## 17. Controllo aggiornamenti delle immagini: registry privati e certificati autofirmati
 
-> **Stato**: fatta la lettura completa di `config.json` (`backend/registry-auth.ts`, con test): chiavi confrontate per nome host come la CLI, `auth`, `username` + `password`, `identitytoken`, `registrytoken`, `credHelpers` / `credsStore`, messaggi "nessuna credenziale" / "credenziali rifiutate". Questo risolve le immagini private su GHCR.
-> **Resta**: certificati autofirmati, tramite il controllo fatto dal demone (`/distribution`).
+> **Stato**: fatto.
+> - Lettura completa di `config.json` (`backend/registry-auth.ts`): chiavi confrontate per nome host come la CLI, `auth`, `username` + `password`, `identitytoken`, `registrytoken`, `credHelpers` / `credsStore`, messaggi "nessuna credenziale" / "credenziali rifiutate". Risolve le immagini private su GHCR.
+> - Controllo tramite il demone: se la richiesta diretta non ottiene risposta (certificato, DNS, connessione, timeout), `getDaemonDigest()` chiede il digest a `GET /distribution/{immagine}/json` con `X-Registry-Auth`. Risolve i registry con certificato autofirmato.
+> - **Resta da verificare** sul NAS con il registry aziendale (`gitlab-docker-registry.prod.dev`).
 
 Il controllo fallisce per le immagini che non stanno su un registry pubblico con certificato riconosciuto, mentre `docker pull` e l'aggiornamento dello stack funzionano:
 

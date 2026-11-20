@@ -241,3 +241,25 @@ export async function getRegistryCredentials(registry : string, options : { conf
         warnings,
     };
 }
+
+/**
+ * Value of the X-Registry-Auth header of the Docker Engine API: JSON in URL-safe base64 with padding
+ * (what the daemon decodes, like the docker CLI sends it)
+ * @param credentials Credentials (undefined: anonymous)
+ * @param registry Registry host ("docker.io" for Docker Hub)
+ */
+export function registryAuthHeader(credentials : RegistryCredentials | undefined, registry : string) : string {
+    const host = normalizeRegistryHost(registry);
+    const value : Record<string, string> = {
+        serveraddress: isDockerHub(host) ? DOCKER_HUB_SERVER_URL : host,
+    };
+    if (credentials?.identityToken) {
+        value.identitytoken = credentials.identityToken;
+    } else if (credentials?.registryToken) {
+        value.registrytoken = credentials.registryToken;
+    } else if (credentials?.username) {
+        value.username = credentials.username;
+        value.password = credentials.password ?? "";
+    }
+    return Buffer.from(JSON.stringify(value)).toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+}

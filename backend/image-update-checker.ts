@@ -5,7 +5,7 @@ import { Stack } from "./stack";
 import { DockgeServer } from "./dockge-server";
 import { LooseObject } from "../common/util-common";
 import { apiName, dockerApiGet } from "./docker-api";
-import { getRegistryCredentials, RegistryAuthResult } from "./registry-auth";
+import { getRegistryCredentials, RegistryAuthResult, registryAuthHeader } from "./registry-auth";
 
 /**
  * Checks whether newer versions of the images used by the stacks are available, without pulling anything.
@@ -194,11 +194,68 @@ async function getBearerToken(challenge : string, ref : ImageRef, auth : Registr
 }
 
 /**
- * Digest currently published by the registry for image:tag
+ * Digest currently published by the registry for image:tag.
+ *
+ * First asked directly to the registry (a HEAD request, not counted by Docker Hub as a pull). When the
+ * registry cannot be reached from Dockge (self-signed or private CA certificate, insecure HTTP registry, a
+ * host name or proxy known only to the host...), the Docker daemon is asked instead: it uses the host's
+ * configuration (/etc/docker/certs.d, insecure-registries, mirrors, proxy), like docker pull.
  */
 export async function getRemoteDigest(ref : ImageRef) : Promise<string> {
-    const url = `https://${registryHost(ref.registry)}/v2/${ref.repository}/manifests/${ref.tag}`;
     const auth = await getRegistryCredentials(ref.registry);
+    try {
+        return await getRemoteDigestDirect(ref, auth);
+    } catch (e) {
+        if (!isConnectionError(e)) {
+            throw e;
+        }
+        try {
+            return await getDaemonDigest(ref, auth);
+        } catch (e2) {
+            throw new Error(`${describeError(e)}; through the Docker daemon: ${e2 instanceof Error ? e2.message : e2}`);
+        }
+    }
+}
+
+/**
+ * The request did not get an HTTP answer (DNS, connection, TLS, timeout)
+ */
+export function isConnectionError(e : unknown) : boolean {
+    return e instanceof Error && (e.name === "AbortError" || e.message === "fetch failed");
+}
+
+/**
+ * Digest of image:tag asked to the Docker daemon (GET /distribution/{name}/json): the daemon queries the
+ * registry with its own certificates and settings and returns the descriptor, without pulling anything.
+ */
+export async function getDaemonDigest(ref : ImageRef, auth : RegistryAuthResult) : Promise<string> {
+    const name = `${ref.registry}/${ref.repository}:${ref.tag}`;
+    let info : { Descriptor? : { digest? : string } };
+    try {
+        info = await dockerApiGet(`/distribution/${apiName(name)}/json`, {
+            headers: {
+                "X-Registry-Auth": registryAuthHeader(auth.credentials, ref.registry),
+            },
+            timeoutMs: REQUEST_TIMEOUT_MS * 2,
+        });
+    } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        // "Docker API /distribution/...: HTTP 401 ..." => "HTTP 401 ...", the path is the image itself
+        const short = message.replace(/^Docker API \S+: /, "");
+        if (/HTTP 40[13]/.test(short) && !auth.credentials) {
+            throw new Error(`${short} (no credentials for ${ref.registry} in ${auth.configPath})`);
+        }
+        throw new Error(short);
+    }
+    const digest = info?.Descriptor?.digest;
+    if (!digest) {
+        throw new Error("The Docker daemon did not return a digest");
+    }
+    return digest;
+}
+
+async function getRemoteDigestDirect(ref : ImageRef, auth : RegistryAuthResult) : Promise<string> {
+    const url = `https://${registryHost(ref.registry)}/v2/${ref.repository}/manifests/${ref.tag}`;
     const credentials = auth.credentials;
     const headers : Record<string, string> = {
         Accept: MANIFEST_ACCEPT,
