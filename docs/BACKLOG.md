@@ -383,7 +383,7 @@ Fuori dalla modalità modifica l'editor del compose.yaml mostra tutto il file: c
   - riquadro compresso a un'altezza massima (es. ~25 righe per il compose, ~10 per il `.env`), con una sfumatura in fondo che faccia capire che il testo continua;
   - un pulsante **"Espandi"** (nella barra del riquadro, accanto a quello per lo schermo intero, e/o in fondo al testo) che mostra tutto il file; ripremendolo (**"Comprimi"**) torna all'altezza ridotta;
   - il pulsante compare solo se il file è più lungo dell'altezza ridotta;
-  - la scelta può essere ricordata nel browser (per tipo di file, non per stack), oppure ripartire sempre compressa: da decidere.
+  - la scelta **non** viene ricordata: aprendo uno stack (o ricaricando la pagina) compose.yaml e `.env` ripartono sempre compressi.
 - **In modalità modifica** compose.yaml e `.env` sono sempre estesi per intero, senza il pulsante (si vede e si modifica tutto il file). Uscendo dalla modifica si torna allo stato scelto.
 - Lo schermo intero già presente (`ExpandableBox`) resta com'è, come alternativa per leggere file lunghi.
 - Il `.env` nascosto (sfocato finché non si preme "Mostra valori") deve continuare a funzionare anche da compresso.
