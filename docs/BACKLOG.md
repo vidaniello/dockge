@@ -408,3 +408,14 @@ Nel riquadro **File** della pagina dello stack (`frontend/src/components/StackFi
   - **API / MCP**: uno strumento `set_file_permissions` (`stack`, `path`, `owner`, `mode`, `recursive`, `fileMode` / `dirMode`, `dryRun`), con gli stessi limiti di percorso delle altre operazioni sui file (cartella dello stack e volumi dichiarati nel suo compose); oppure estendere `set_volume_permissions` a qualsiasi percorso consentito.
 - **Sicurezza**: solo nelle radici già consentite dalla gestione file (`FileService.forStack`), chiave API con permesso di scrittura; operazione lunga eseguita come job (come le conversioni ZFS) se gli elementi sono molti.
 - Sostituisce la riga "proprietario dei file (`PUID` / `PGID`)" del punto 4.
+
+## 24. Barra laterale: aprire la cartella dello stack aperto e mostrarlo selezionato
+
+Se si apre uno stack che sta in una cartella chiusa della barra laterale (dalla home, da un link, dalla barra degli indirizzi, dopo una rinomina o una creazione, da un altro agent…), la cartella resta chiusa e non si vede quale stack è aperto.
+
+- **Comportamento voluto**: all'apertura di uno stack la barra laterale apre le cartelle che lo contengono, compresa tutta la catena delle cartelle superiori (`media` → `media/arr`), e lo mostra **selezionato** (evidenziato come oggi lo stack attivo).
+- Se lo stack è fuori dalla parte visibile della barra, scorrerla fino a lui (`scrollIntoView({ block: "nearest" })`), senza far scorrere la pagina.
+- Lo stesso per i gruppi chiusi: **"Stack non gestiti"** (e le app TrueNAS a parte) e il gruppo dell'agent, se lo stack aperto è lì.
+- **Le altre cartelle non cambiano**: si aprono solo quelle necessarie. Le cartelle aperte in questo modo restano aperte (salvate come se le avesse aperte l'utente, `openGroups` in `localStorage`), oppure tornano chiuse quando si apre uno stack fuori da esse: da decidere (più semplice e prevedibile: restano aperte).
+- Non riaprire una cartella che l'utente chiude mentre lo stack è aperto: l'apertura automatica avviene solo quando cambia lo stack aperto (cambio di percorso `/compose/:name/:endpoint`), non a ogni aggiornamento della lista.
+- Dove: `frontend/src/components/StackList.vue` (`isFolderOpen()`, `toggleFolder()`, `isGroupOpen()`, chiavi `endpoint|folder:<percorso>` e `endpoint|<gruppo>`), con un `watch` sulla route; lo stack attivo viene dal parametro `name` / `endpoint` della route.
